@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Audiobook Producer is a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, and procedurally generated background music. Uses only free tools (no API keys required). See PLAN.md for the full implementation roadmap.
+Audiobook Producer is a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, sound effects, and procedurally generated background music. Uses only free tools (no API keys required). See PLAN.md for the full implementation roadmap.
 
 ## Commands
 
@@ -14,7 +14,7 @@ pip install -r requirements.txt
 # System dependency: ffmpeg (brew install ffmpeg)
 
 # Run tests (TDD anchor — always run this first)
-pytest test_producer.py -v
+pytest tests/ -v
 
 # Run with bundled demo story
 python producer.py -v
@@ -26,49 +26,66 @@ python producer.py story.txt -o output.mp3
 python producer.py --list-voices
 ```
 
-## Development Method — TDD via Ralph Loop
+## Development Method — Parallel TDD via Ralph Loop
 
-This project is built test-first in atomic phases. Each phase writes failing tests, implements until green, commits. A fresh agent session picks up from git state:
+This project is built test-first with **parallel module development**. Modules at the same dependency layer can be built simultaneously by separate Ralph Loop agents. Each agent claims one module, writes tests, implements until green, commits.
 
-1. Run `pytest test_producer.py -v 2>&1 | tail -40` to see current state
-2. First failing test = current phase's work
-3. All green = check PLAN.md for next uncommitted phase
-4. **Check the Model strategy table in PLAN.md** for the recommended model for this phase
-5. Implement current phase, verify green, commit with detailed message, `git push`, stop
+1. Run `pytest tests/ -v 2>&1 | tail -40` to see current state
+2. First failing test file = current module's work
+3. All green = check PLAN.md for next unclaimed layer/module
+4. **Check the Model strategy table in PLAN.md** for the recommended model
+5. Implement module, verify green, commit with detailed message, `git push`, stop
 
-**Model strategy**: Each phase is tagged `[sonnet]` or `[opus]` in PLAN.md. Default to Sonnet (~5x cheaper). Phases 6 (assemble) and 8 (integration) use Opus. If a Sonnet phase fails 2 iterations in a row, escalate to Opus. See PLAN.md "Model strategy" section for the full table.
+**Model strategy**: Each module is tagged `[sonnet]` or `[opus]` in PLAN.md. Default to Sonnet (~5x cheaper). Assembly and integration use Opus. If a Sonnet module fails 2 iterations in a row, escalate to Opus.
 
-See PLAN.md "TDD Phases — Ralph Loop Iteration Guide" for the full phase list and test inventory.
+See PLAN.md "TDD Phases — Parallel Ralph Loop Iteration Guide" for the full layer structure and test inventory.
 
-**Done condition**: all tests green AND `python producer.py -v` produces a playable MP3.
+**Done condition**: all tests green AND `python producer.py -v` produces a playable MP3 with bookend intro/outro.
 
 ## Architecture
 
-Single-file design: everything lives in `producer.py`, organized by section comments (constants → dataclass → parse → voices → TTS → music → assemble → export → CLI → main). All magic numbers are module-level constants at the top of the file.
+Multi-module package: `audiobook_producer/` with one module per concern. `producer.py` is a thin entry point.
 
-The pipeline runs 6 sequential steps:
+```
+audiobook_producer/
+  constants.py    # all magic numbers
+  models.py       # Segment dataclass
+  parser.py       # parse_story(), extract_metadata()
+  voices.py       # assign_voices(), bookend scripts (intro/outro)
+  tts.py          # generate_tts(), edge-tts, retry logic
+  music.py        # generate_ambient_music(), numpy synthesis
+  effects.py      # reverb (pedalboard), procedural SFX, normalization
+  assembly.py     # assemble(), bookend music structure
+  exporter.py     # export() MP3 + metadata
+  cli.py          # argparse, validation, pipeline orchestration
+```
 
-1. **Parse** — Regex-based text segmentation. First-person "I" attributions map to narrator.
-2. **Assign voices** — Hash-based deterministic mapping: `hash(speaker) % len(voices)`. Voice set directly on `Segment.voice`.
-3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). `generate_tts()` is sync, uses `asyncio.run()` internally per segment. Progress counter + ETA.
+The pipeline:
+
+1. **Parse** — Regex-based text segmentation + metadata extraction (title, author). First-person "I" attributions map to narrator.
+2. **Assign voices + bookends** — sha256-based deterministic voice mapping. Narrator narration → American, narrator dialogue → British. Generate intro/outro segment scripts.
+3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). Processes all segments: intro + story + outro.
 4. **Generate music** — Procedural ambient drone via numpy sine waves (A-minor).
-5. **Assemble** — Concatenate with type-aware pauses (300/500/700ms), overlay music at -22dB, fade in/out.
+4b. **Apply effects** — Reverb on dialogue (pedalboard, optional), volume normalization, procedural SFX.
+5. **Assemble** — Bookend structure: music intro → narrator intro over music bed → story with type-aware pauses (no music) → narrator outro over music bed → music fade out.
 6. **Export** — MP3 at 192kbps with metadata tags.
 
 ## Testing
 
-`test_producer.py` is the single test file covering all phases. Tests use:
+Each module has its own test file in `tests/`. Shared fixtures in `tests/conftest.py`. Tests use:
 - **Pure function tests** for parse and voice logic (no mocks needed)
-- **`unittest.mock.patch`** on `edge_tts.Communicate` for TTS tests (returns async mock writing tiny MP3)
+- **`unittest.mock.patch`** on `audiobook_producer.tts.edge_tts.Communicate` for TTS tests (fully qualified path)
 - **`unittest.mock.patch("shutil.which")`** to mock ffmpeg availability
 - **`tmp_path` fixture** for all file I/O
 - **`AudioSegment.silent()`** to create real pydub objects without ffmpeg
+- **pedalboard mocks** in effects tests for environments without pedalboard
 
 ## Key Conventions
 
-- **pedalboard is optional**: imported via `try/except ImportError` with graceful fallback
+- **pedalboard is optional**: imported via `try/except ImportError` in effects.py with graceful fallback
+- **hashlib.sha256 for voice assignment**: NOT `hash()` — Python's `hash()` is randomized per process since 3.3
 - **Temp files**: created with `tempfile.mkdtemp()`, cleaned up in `finally` block via `shutil.rmtree()`
-- **Voice assignment is deterministic**: hash-based, stable across text edits
+- **Voice assignment is deterministic**: sha256-based, stable across runs and text edits
 - **Input validation**: fail fast — check file exists, non-empty, segments produced, ffmpeg installed
-- **Demo story**: bundled at `demo/tell_tale_heart.txt` (Poe, public domain)
+- **Demo stories**: bundled at `demo/tell_tale_heart.txt` (Poe) and `demo/the_open_window.txt` (Saki), both public domain
 - **Commit convention**: detailed multi-line messages — short imperative subject, body explaining what and why
