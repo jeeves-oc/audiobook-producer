@@ -276,7 +276,7 @@ PHASE PROGRESSION (each phase = one atomic commit)
   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
   │ Phase 1     │──▶│ Phase 2     │──▶│ Phase 3     │──▶ ...
   │ Skeleton    │   │ Parsing     │   │ Voices      │
-  │ + constants │   │ + tests     │   │ + tests     │
+  │ [sonnet]    │   │ [sonnet]    │   │ [sonnet]    │
   └─────────────┘   └─────────────┘   └─────────────┘
 
 Each phase:
@@ -288,17 +288,42 @@ Each phase:
   6. Next agent picks up from git
 ```
 
+### Model strategy
+
+Each phase is tagged with a recommended model. Start with Sonnet for the whole run — it's ~5x cheaper than Opus and handles well-specified phases fine. **Escalate to Opus only if a phase fails after 2 consecutive Ralph Loop iterations.**
+
+```
+MODEL ASSIGNMENTS (~60-70% cost savings vs all-Opus)
+════════════════════════════════════════════════════
+
+  Phase │ Model  │ Why
+  ──────┼────────┼──────────────────────────────────
+    1   │ sonnet │ Copy constants from plan, boilerplate
+    2   │ sonnet │ Regex parsing, well-specified rules
+    3   │ sonnet │ Hash + one branch, straightforward
+    4   │ sonnet │ Async mocks, moderate complexity
+    5   │ sonnet │ Numpy math, self-contained
+    6   │ opus   │ Pydub orchestration, pause logic, overlay
+    7   │ sonnet │ Argparse boilerplate, validation checks
+    8   │ opus   │ Full pipeline wiring, integration debugging
+    9   │ sonnet │ Docs only, no logic
+
+  ESCALATION RULE: if a sonnet-tagged phase fails
+  2 iterations in a row → switch to opus for that phase
+```
+
 ### How a fresh agent session should start
 
 1. Run `pytest test_producer.py -v 2>&1 | tail -40` to see current state
 2. If no test file exists, start at Phase 1
 3. If tests exist, find the first failing test — that's the current phase
 4. If all tests pass, check the phase list below for the next uncommitted phase
-5. Implement the current phase (tests first if tests don't exist for it yet)
-6. Run `pytest test_producer.py -v` to verify green
-7. Commit and `git push` — next session picks up from remote
+5. Check the **Model strategy** table above for the recommended model for this phase
+6. Implement the current phase (tests first if tests don't exist for it yet)
+7. Run `pytest test_producer.py -v` to verify green
+8. Commit and `git push` — next session picks up from remote
 
-### Phase 1: Skeleton + constants + dataclass
+### Phase 1: Skeleton + constants + dataclass `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_segment_dataclass` — fields exist, defaults work
@@ -310,7 +335,7 @@ Each phase:
 - Create `requirements.txt`
 - Commit: "Add project skeleton with constants, Segment dataclass, and parse tests"
 
-### Phase 2: parse_story()
+### Phase 2: parse_story() `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_parse_narration_only` — plain paragraph → narration Segment
@@ -328,7 +353,7 @@ Note: `test_parse_full_story` (which uses the demo file) lives in Phase 8, not h
 - Also write Phase 3 tests (will be red)
 - Commit: "Implement parse_story() with dialogue extraction and speaker attribution"
 
-### Phase 3: assign_voices()
+### Phase 3: assign_voices() `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_narrator_gets_narrator_voice` — narrator narration segments get `en-US-GuyNeural`
@@ -343,7 +368,7 @@ Note: `test_parse_full_story` (which uses the demo file) lives in Phase 8, not h
 - Also write Phase 4 tests (will be red)
 - Commit: "Implement assign_voices() with hash-based deterministic assignment"
 
-### Phase 4: generate_tts()
+### Phase 4: generate_tts() `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_tts_generates_files` — mock edge_tts, verify N files created in temp dir
@@ -361,7 +386,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - Also write Phase 5 tests (will be red)
 - Commit: "Implement generate_tts() with exponential backoff retry and progress output"
 
-### Phase 5: generate_ambient_music()
+### Phase 5: generate_ambient_music() `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_music_returns_audio_segment` — returns a pydub AudioSegment
@@ -373,7 +398,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - Also write Phase 6 tests (will be red)
 - Commit: "Implement generate_ambient_music() with numpy sine wave synthesis"
 
-### Phase 6: assemble() + export()
+### Phase 6: assemble() + export() `[opus]`
 
 **Tests for this phase** (green after implementation):
 - `test_assemble_single_segment` — 1 segment → output audio with no pauses
@@ -391,7 +416,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - Also write Phase 7 tests (will be red)
 - Commit: "Implement assemble() and export() with type-aware pauses and music overlay"
 
-### Phase 7: Input validation + CLI
+### Phase 7: Input validation + CLI `[sonnet]`
 
 **Tests for this phase** (green after implementation):
 - `test_validate_missing_file` — SystemExit with clear message
@@ -410,7 +435,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - Also write Phase 8 tests (will be red)
 - Commit: "Add input validation and CLI argument parsing"
 
-### Phase 8: Demo story + integration
+### Phase 8: Demo story + integration `[opus]`
 
 **Tests for this phase** (green after implementation):
 - `test_parse_full_story` — parse `demo/tell_tale_heart.txt`, verify segments > 0 and no empty text fields
@@ -423,7 +448,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - **Green tests**: ALL tests
 - Commit: "Add demo story and wire up full pipeline"
 
-### Phase 9: Documentation + final
+### Phase 9: Documentation + final `[sonnet]`
 
 No new tests. Manual verification only.
 

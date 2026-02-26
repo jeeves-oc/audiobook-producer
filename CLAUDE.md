@@ -33,7 +33,10 @@ This project is built test-first in atomic phases. Each phase writes failing tes
 1. Run `pytest test_producer.py -v 2>&1 | tail -40` to see current state
 2. First failing test = current phase's work
 3. All green = check PLAN.md for next uncommitted phase
-4. Implement current phase, verify green, commit with detailed message, `git push`, stop
+4. **Check the Model strategy table in PLAN.md** for the recommended model for this phase
+5. Implement current phase, verify green, commit with detailed message, `git push`, stop
+
+**Model strategy**: Each phase is tagged `[sonnet]` or `[opus]` in PLAN.md. Default to Sonnet (~5x cheaper). Phases 6 (assemble) and 8 (integration) use Opus. If a Sonnet phase fails 2 iterations in a row, escalate to Opus. See PLAN.md "Model strategy" section for the full table.
 
 See PLAN.md "TDD Phases — Ralph Loop Iteration Guide" for the full phase list and test inventory.
 
