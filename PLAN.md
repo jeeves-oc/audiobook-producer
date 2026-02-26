@@ -4,12 +4,16 @@
 
 Build a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, and background music. The user has no API keys, so we use free tools only. MVP targets a single short story ("The Tell-Tale Heart" by Poe) as a bundled demo. New public GitHub repo.
 
+**Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest test_producer.py -v` to see what's red.
+
+**Done condition**: `pytest test_producer.py -v` is all green AND `python producer.py -v` produces a playable MP3 file of "The Tell-Tale Heart" with distinct character voices and background music.
+
 ## Project Structure
 
 ```
 audiobook-producer/
   producer.py              # Single-file app (entire pipeline)
-  test_producer.py         # Unit tests (pytest) for parse + voice logic
+  test_producer.py         # Full test suite (pytest) — TDD anchor
   demo/
     tell_tale_heart.txt    # Bundled demo story (public domain)
   requirements.txt
@@ -29,7 +33,7 @@ audiobook-producer/
 | Background music | Procedurally generated (numpy) | No licensing, no downloads, reproducible |
 | CLI | argparse (stdlib) | No extra dependency |
 | Output | MP3 (192kbps) | Good quality, universal compatibility |
-| Testing | pytest | Unit tests for parse and voice assignment logic |
+| Testing | pytest + unittest.mock | TDD with mocked I/O for edge-tts and ffmpeg |
 
 ## File Organization
 
@@ -211,64 +215,199 @@ Detailed, multi-line commit messages: short imperative subject line, blank line,
 - **Hash-based voice assignment**: `hash(name) % len(voices)` is stable across text edits — only the new/removed character's voice changes, others stay the same.
 - **"I" = narrator**: First-person attributions map to the narrator voice, preventing the narrator from being assigned two different voices in first-person stories.
 
-## Testing
+## Testing Strategy — TDD with Mocks
 
-### Automated (pytest)
+All development is test-first. `test_producer.py` is the single test file. Each phase below writes failing tests, then implements until green.
 
-`test_producer.py` covers the pure functions with the most branching logic:
+### Mock strategy
 
-**parse_story() tests:**
-- Paragraph with only narration → `Segment(type="narration")`
-- Paragraph with quoted dialogue → `Segment(type="dialogue")`
-- Mixed narration + dialogue paragraph → multiple Segments
-- Speaker from attribution ("said John") → speaker field set
-- First-person "I" attribution → speaker = narrator
-- Dialogue with no attribution → speaker = unknown/default
-- Long segment >500 chars → split at sentence boundary
-- Empty/whitespace paragraph → skipped
+| Dependency | Mock approach | Why |
+|-----------|--------------|-----|
+| `edge_tts.Communicate` | `unittest.mock.patch` returning an async mock whose `save()` writes a valid tiny MP3 | Avoids network calls; tests run in <1s |
+| `ffmpeg` (subprocess) | `unittest.mock.patch("shutil.which")` returning `/usr/bin/ffmpeg` | Avoids system dependency check in tests |
+| File I/O for TTS | `tmp_path` fixture (pytest built-in) | Real filesystem in temp dirs, auto-cleaned |
+| `pydub.AudioSegment` | Real objects — `AudioSegment.silent(duration=100)` | pydub can create tiny silent segments without ffmpeg for basic ops |
 
-**assign_voices() tests:**
-- Narrator always gets narrator voice
-- Character gets hash-based voice from pool
-- Same speaker always gets same voice (determinism)
-- More speakers than voices → hash wraps around gracefully
+### Test fixture: minimal valid MP3
 
-Run tests: `pytest test_producer.py -v`
+Tests that need a real MP3 file (TTS output, assembly input) use a shared fixture that generates a tiny valid MP3 via pydub:
 
-### Manual verification
+```python
+@pytest.fixture
+def tiny_mp3(tmp_path):
+    """Generate a 100ms silent MP3 for testing."""
+    path = tmp_path / "test.mp3"
+    silence = AudioSegment.silent(duration=100)
+    silence.export(str(path), format="mp3")
+    return path
+```
 
-1. Run `python producer.py -v` (uses bundled demo)
-2. Verify verbose output shows correct segment count, speakers, voice assignments, progress + ETA
-3. Play output MP3 — confirm:
-   - Narrator voice is clear and consistent
-   - Character dialogue uses distinct voices
-   - Background music is subtle but present
-   - Natural pauses between segments
-   - Fade in/out at start and end
-4. Run `python producer.py --list-voices` — confirm voice list prints
-5. Run `python producer.py --no-music` — confirm music-free output
+### Test inventory by phase
 
-## Implementation Order
+**Phase 1 tests (Segment + constants):**
+- `test_segment_dataclass` — fields exist, defaults work
+- `test_constants_exist` — all module-level constants are defined
 
-1. CLI skeleton + `Segment` dataclass + constants
-2. `parse_story()` + unit tests
-3. `assign_voices()` + unit tests
-4. `generate_tts()` with retry logic + progress output
-5. `generate_ambient_music()`
-6. `assemble()` + `export()` — wire up full pipeline
-7. Input validation (file checks, ffmpeg check)
-8. Add `demo/tell_tale_heart.txt` (from Wikisource, clean text only)
-9. Write README, LICENSE, requirements.txt
-10. Manual verification pass
-11. Create GitHub repo and push
+**Phase 2 tests (parse_story):**
+- `test_parse_narration_only` — plain paragraph → narration Segment
+- `test_parse_dialogue` — `"Hello," said John.` → dialogue Segment with speaker="John"
+- `test_parse_mixed_paragraph` — narration + dialogue in one paragraph → multiple Segments
+- `test_parse_first_person` — `"Stop!" I cried.` → speaker="narrator" (not "I")
+- `test_parse_no_attribution` — `"Hello."` with no attribution → speaker="unknown"
+- `test_parse_long_segment_split` — >500 char segment → split at sentence boundary
+- `test_parse_empty_paragraphs_skipped` — whitespace-only paragraphs produce no segments
+- `test_parse_full_story` — parse `demo/tell_tale_heart.txt`, verify segments > 0 and no empty text fields
+
+**Phase 3 tests (assign_voices):**
+- `test_narrator_gets_narrator_voice` — narrator segments get `en-US-GuyNeural`
+- `test_character_gets_voice` — non-narrator speaker gets a voice from the pool
+- `test_voice_determinism` — same speaker list → same assignments on repeated calls
+- `test_voice_stability` — adding a speaker doesn't change existing speakers' voices
+- `test_many_speakers_wrap` — 20 speakers don't crash (hash wraps around pool)
+
+**Phase 4 tests (generate_tts):**
+- `test_tts_generates_files` — mock edge_tts, verify N files created in temp dir
+- `test_tts_retry_on_failure` — mock edge_tts to fail once then succeed, verify retry
+- `test_tts_retry_exhausted` — mock edge_tts to always fail, verify raises after 3 retries
+- `test_tts_validates_output_size` — mock edge_tts to write 0-byte file, verify treated as failure
+- `test_tts_progress_output` — capture stdout, verify segment counter appears
+
+**Phase 5 tests (generate_ambient_music):**
+- `test_music_returns_audio_segment` — returns a pydub AudioSegment
+- `test_music_correct_duration` — duration ≈ MUSIC_LOOP_SECONDS * 1000 ms (±100ms)
+- `test_music_not_silent` — RMS > 0 (actually produces sound)
+
+**Phase 6 tests (assemble):**
+- `test_assemble_single_segment` — 1 segment → output audio with no pauses
+- `test_assemble_same_type_pause` — 2 narration segments → ~300ms gap
+- `test_assemble_type_transition_pause` — narration then dialogue → ~700ms gap
+- `test_assemble_speaker_change_pause` — dialogue speaker A then B → ~500ms gap
+- `test_assemble_with_music` — output is longer than sum of segments (music overlaid)
+- `test_assemble_no_music_flag` — when no_music=True, output ≈ sum of segments + pauses
+
+**Phase 7 tests (export):**
+- `test_export_creates_file` — output file exists and is >0 bytes
+- `test_export_is_valid_mp3` — pydub can reload the exported file
+
+**Phase 8 tests (input validation):**
+- `test_validate_missing_file` — SystemExit with clear message
+- `test_validate_empty_file` — SystemExit with clear message
+- `test_validate_no_segments` — SystemExit with clear message
+
+**Phase 9 tests (CLI):**
+- `test_cli_default_args` — no args → uses bundled demo, default output path
+- `test_cli_custom_input` — positional arg sets input file
+- `test_cli_output_flag` — `-o` sets output path
+- `test_cli_no_music_flag` — `--no-music` sets flag
+- `test_cli_verbose_flag` — `-v` sets verbose
+- `test_cli_list_voices` — `--list-voices` prints voices and exits
+
+**Phase 10 tests (integration):**
+- `test_full_pipeline_mocked_tts` — mock edge_tts, run full pipeline on demo story, verify output MP3 exists and is valid
+- `test_full_pipeline_no_music` — same as above with --no-music
+
+## TDD Phases — Ralph Loop Iteration Guide
+
+```
+PHASE PROGRESSION (each phase = one atomic commit)
+═══════════════════════════════════════════════════
+
+  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+  │ Phase 1     │──▶│ Phase 2     │──▶│ Phase 3     │──▶ ...
+  │ Skeleton    │   │ Parsing     │   │ Voices      │
+  │ + constants │   │ + tests     │   │ + tests     │
+  └─────────────┘   └─────────────┘   └─────────────┘
+
+Each phase:
+  1. Read PLAN.md to find current phase
+  2. Run pytest — see what's red (or no tests yet)
+  3. Write failing tests for this phase
+  4. Implement until green
+  5. Commit with detailed message
+  6. Next agent picks up from git
+```
+
+### How a fresh agent session should start
+
+1. Run `pytest test_producer.py -v 2>&1 | tail -40` to see current state
+2. If no test file exists, start at Phase 1
+3. If tests exist, find the first failing test — that's the current phase
+4. If all tests pass, check the phase list below for the next uncommitted phase
+5. Implement the current phase (tests first if tests don't exist for it yet)
+6. Run `pytest test_producer.py -v` to verify green
+7. Commit and stop — next session picks up
+
+### Phase 1: Skeleton + constants + dataclass
+- Create `producer.py` with all constants, `Segment` dataclass, section comment structure, and empty function stubs that raise `NotImplementedError`
+- Create `test_producer.py` with Phase 1 + Phase 2 tests (Phase 2 tests will be red — that's correct)
+- Create `requirements.txt`
+- **Green tests**: `test_segment_dataclass`, `test_constants_exist`
+- **Red tests**: all Phase 2 parse tests (expected — they're the next phase's work)
+- Commit: "Add project skeleton with constants, Segment dataclass, and parse tests"
+
+### Phase 2: parse_story()
+- Implement `parse_story()` until all Phase 2 tests pass
+- Add Phase 3 tests (will be red)
+- **Green tests**: Phase 1 + Phase 2
+- **Red tests**: Phase 3 voice tests
+- Commit: "Implement parse_story() with dialogue extraction and speaker attribution"
+
+### Phase 3: assign_voices()
+- Implement `assign_voices()` until all Phase 3 tests pass
+- Add Phase 4 tests (will be red)
+- **Green tests**: Phase 1-3
+- **Red tests**: Phase 4 TTS tests
+- Commit: "Implement assign_voices() with hash-based deterministic assignment"
+
+### Phase 4: generate_tts()
+- Implement `generate_tts()` with retry logic and progress output
+- All Phase 4 tests should go green (they use mocked edge_tts)
+- Add Phase 5 tests (will be red)
+- **Green tests**: Phase 1-4
+- **Red tests**: Phase 5 music tests
+- Commit: "Implement generate_tts() with exponential backoff retry and progress output"
+
+### Phase 5: generate_ambient_music()
+- Implement numpy-based ambient music generation
+- All Phase 5 tests should go green
+- Add Phase 6 tests (will be red)
+- **Green tests**: Phase 1-5
+- **Red tests**: Phase 6 assembly tests
+- Commit: "Implement generate_ambient_music() with numpy sine wave synthesis"
+
+### Phase 6: assemble() + export()
+- Implement `assemble()` with type-aware pauses and music overlay
+- Implement `export()` for MP3 output
+- All Phase 6 + Phase 7 tests should go green
+- Add Phase 7 tests alongside implementation
+- Add Phase 8 tests (will be red)
+- **Green tests**: Phase 1-7
+- **Red tests**: Phase 8 validation tests
+- Commit: "Implement assemble() and export() with type-aware pauses and music overlay"
+
+### Phase 7: Input validation + CLI
+- Implement input validation checks
+- Implement CLI arg parsing with argparse
+- Add Phase 8 + Phase 9 tests, implement until green
+- Add Phase 10 integration tests (will be red)
+- **Green tests**: Phase 1-9
+- **Red tests**: Phase 10 integration tests
+- Commit: "Add input validation and CLI argument parsing"
+
+### Phase 8: Demo story + integration
+- Add `demo/tell_tale_heart.txt` (from Wikisource, clean text only)
+- Wire up `main()` to run the full pipeline
+- All Phase 10 integration tests should go green
+- **Green tests**: ALL tests
+- Commit: "Add demo story and wire up full pipeline"
+
+### Phase 9: Documentation + final
+- Write README.md, LICENSE (MIT)
+- Run `python producer.py -v` for real (with actual edge-tts network calls)
+- Verify output MP3 plays correctly
+- Commit: "Add documentation and verify end-to-end output"
 
 ## Future Work
 
 ### Async/concurrent TTS generation
 Sequential TTS takes ~1-2 minutes for a short story. For longer texts (novel chapters, ~10K words), this could be 5-10 minutes. Replace the sequential loop in `generate_tts()` with `asyncio.gather()` + `Semaphore(5)` to limit concurrency while still respecting rate limits. This is the single biggest performance win available.
-
-### Integration tests for TTS + assembly
-Unit tests cover parse and voice logic, but the TTS and audio assembly pipeline is only manually verified. Add mock-based integration tests: mock `edge_tts.Communicate` with pre-recorded fixtures, verify `assemble()` produces non-zero audio with correct approximate duration. This would enable safe refactoring from single-file to modules.
-
-### TTS output validation
-After each TTS call, verify the output file exists and is >0 bytes. If the file is empty or corrupted, treat it as a retry-able failure within the existing retry logic. This prevents a confusing pydub crash during assembly when edge-tts returns a 200 OK with empty content. Implementation: add `os.path.getsize(path) > 0` check to the retry loop's success condition (~3 lines).
