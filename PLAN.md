@@ -154,6 +154,7 @@ TTS_RETRY_BASE_DELAY = 1.0         # seconds — base delay for exponential back
   - PAUSE_SAME_TYPE_MS between same-type segments
   - PAUSE_TYPE_TRANSITION_MS at narration/dialogue transitions
   - PAUSE_SPEAKER_CHANGE_MS at speaker changes
+  - **Precedence**: when multiple rules apply (e.g., type transition + speaker change), use `max()` — the longest applicable pause wins
 - Overlay background music at MUSIC_OVERLAY_DB (subtle, atmospheric)
 - Fade in/out on final mix
 
@@ -354,9 +355,9 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 
 **Tests for this phase** (green after implementation):
 - `test_assemble_single_segment` — 1 segment → output audio with no pauses
-- `test_assemble_same_type_pause` — 2 narration segments → total duration ≈ sum of segments + 300ms
-- `test_assemble_type_transition_pause` — narration then dialogue → total duration ≈ sum + 700ms
-- `test_assemble_speaker_change_pause` — dialogue speaker A then B → total duration ≈ sum + 500ms
+- `test_assemble_same_type_pause` — 2 narration segments → total duration ≈ sum of segments + 300ms (±100ms tolerance)
+- `test_assemble_type_transition_pause` — narration then dialogue → total duration ≈ sum + 700ms (±100ms)
+- `test_assemble_speaker_change_pause` — dialogue speaker A then B → total duration ≈ sum + 500ms (±100ms)
 - `test_assemble_with_music` — output RMS > voice-only RMS (music adds energy; overlay does NOT change duration)
 - `test_assemble_no_music_flag` — when no_music=True, output ≈ sum of segments + pauses
 - `test_export_creates_file` — output file exists and is >0 bytes
@@ -395,7 +396,7 @@ Mock setup: `unittest.mock.patch("edge_tts.Communicate")` returns a mock instanc
 - `test_full_pipeline_no_music` — same as above with --no-music
 
 **Implementation:**
-- Add `demo/tell_tale_heart.txt` (from Wikisource, clean text only)
+- `demo/tell_tale_heart.txt` is already committed (sourced from eapoe.org, public domain)
 - Wire up `main()` to run the full pipeline
 - **Green tests**: ALL tests
 - Commit: "Add demo story and wire up full pipeline"
@@ -411,6 +412,11 @@ No new tests. Manual verification only.
 - Commit: "Add documentation and verify end-to-end output"
 
 ## Future Work
+
+### Multi-voice demo story
+The Tell-Tale Heart is ~95% first-person narration — the output is mostly one voice. To showcase distinct character voices, add a second dialogue-heavy demo. Candidates (all public domain, short, with male/female and young/old speakers):
+- **"The Open Window" by Saki** (~1200 words) — Vera (young female), Framton Nuttel (male), Mrs. Sappleton (older female). Almost entirely dialogue. Great contrast to Tell-Tale Heart.
+- **"The Monkey's Paw" by W.W. Jacobs** (~4000 words) — Mr. White (old male), Mrs. White (old female), Herbert (young male), Sergeant-Major Morris (male). Dramatic, dialogue-heavy throughout.
 
 ### Async/concurrent TTS generation
 Sequential TTS takes ~1-2 minutes for a short story. For longer texts (novel chapters, ~10K words), this could be 5-10 minutes. Replace the sequential loop in `generate_tts()` with `asyncio.gather()` + `Semaphore(5)` to limit concurrency while still respecting rate limits. This is the single biggest performance win available.
