@@ -376,11 +376,11 @@ MUSIC SOURCE RESOLUTION
              Generate numpy sine wave ambient → save as output/<slug>/music/background.mp3
 ```
 
-- **Bundled demo music**: `demo/music/tell_tale_heart.mp3` (Satie Gymnopédie No. 1) and `demo/music/the_open_window.mp3` (Debussy Clair de Lune). CC0 recordings from Musopen. Checked into the repo via a `.gitignore` exception for `demo/music/*.mp3`.
+- **Bundled demo music**: `demo/music/tell_tale_heart.mp3` (Satie Gymnopédie No. 1) and `demo/music/the_open_window.mp3` (Debussy Clair de Lune). Full-length CC0 recordings from Musopen (~3-5MB each). Checked into the repo via a `.gitignore` exception for `demo/music/*.mp3`. Trimmed to MUSIC_LOOP_SECONDS at runtime by `load_and_prepare_music()` when copied to the project.
 - **User-provided music**: `set <slug> music-file <path>` copies the file into the project. See set subcommand below.
 - **Procedural fallback**: numpy sine wave ambient drone (A-minor, low-frequency), MUSIC_LOOP_SECONDS duration.
 - **Trim + fade**: If the source file is longer than MUSIC_LOOP_SECONDS, take the first N seconds and apply MUSIC_FADE_MS fade-out. Files shorter than the target are used as-is.
-- **Provenance tracking**: `direction.json` records `music_source` (e.g., `"bundled:tell_tale_heart.mp3"`, `"user:ambient.mp3"`, `"procedural"`).
+- **Provenance tracking**: `direction.json` records `music_source` (e.g., `"bundled:tell_tale_heart.mp3"`, `"user:ambient.mp3"`, `"procedural"`). Written by: cli.py run pipeline (after `generate_music()` returns the source string), or `set music-file` (writes `"user:<filename>"` directly). `generate_music()` itself does NOT write direction.json — it returns `(AudioSegment, source_str)` for the caller to persist.
 
 ### Step 4b: Apply audio effects
 - **`effects.py`** — per-segment audio processing after TTS generation
@@ -540,14 +540,14 @@ SET KEY → ARTIFACT MAPPING
   narrator-voice    │ cast.json        │ .narrator.voice                        │ string (voice ID)
   narrator-dialogue │ cast.json        │ .narrator.dialogue_voice               │ string (voice ID)
   music             │ direction.json   │ .no_music                              │ bool (on→false, off→true)
-  music-file        │ (file copy)      │ output/<slug>/music/background.mp3     │ path (source file to copy)
+  music-file        │ direction.json   │ .music_source + file copy to music/    │ path (source file to copy)
   music-db          │ direction.json   │ .music_bed_db                          │ float (negative dB)
   reverb            │ effects.json     │ .per_segment.dialogue.reverb           │ dict or null (on→defaults, off→null)
   reverb-room       │ effects.json     │ .per_segment.dialogue.reverb.room_size │ float (0.0-1.0)
   reverb-wet        │ effects.json     │ .per_segment.dialogue.reverb.wet_level │ float (0.0-1.0)
 ```
 
-Note: `set voice` requires `<speaker>` argument to identify which character. `set music-file` copies a file instead of updating JSON — it validates the source exists and is loadable by pydub, copies to `output/<slug>/music/background.mp3`, and updates `direction.json` with `music_source`. All other keys take a single value argument. The `set` subcommand validates the project exists before loading artifacts.
+Note: `set voice` requires `<speaker>` argument to identify which character. `set music-file` calls `load_and_prepare_music()` which validates, trims, fades, and saves to `output/<slug>/music/background.mp3` (the load itself IS the validation — no separate check needed; if the source is corrupt, the load throws and `set` reports the error). It also writes `music_source: "user:<original_filename>"` to `direction.json` to preserve provenance. All other keys take a single value argument. The `set` subcommand validates the project exists before loading artifacts.
 
 ### output.json Manifest
 
@@ -693,7 +693,7 @@ OUTPUT DIRECTORY LIFECYCLE
 }
 ```
 
-`music_source` is populated at run time by `generate_music()`. Possible values: `"bundled:<filename>"` (e.g., `"bundled:tell_tale_heart.mp3"`), `"user:<original_filename>"`, `"procedural"`, or `null` (not yet resolved). Written back to `direction.json` after music step completes.
+`music_source` tracks where the background music came from. Possible values: `"bundled:<filename>"` (e.g., `"bundled:tell_tale_heart.mp3"`), `"user:<original_filename>"`, `"procedural"`, or `null` (not yet resolved). **Writers**: `set music-file` writes `"user:<filename>"` at set time. cli.py run pipeline writes the value returned by `generate_music()` after the music step completes. `generate_music()` reads (but does not write) this field — step 1 uses the existing value to preserve provenance when background.mp3 is already present.
 
 **effects.json** — effects applied per segment, written after Step 2:
 ```json
@@ -1054,9 +1054,9 @@ Commit: "Implement TTS generation with exponential backoff retry"
 **File**: `audiobook_producer/music.py`
 
 **Functions**:
-- **`generate_music(project_dir, music_file=None)`**: Resolve music source and return AudioSegment. Priority: (1) existing `background.mp3` in project `music/` dir, (2) `music_file` argument → copy to project then load, (3) bundled demo music matching project slug, (4) procedural numpy fallback. All sources are trimmed/faded to MUSIC_LOOP_SECONDS and saved as `output/<slug>/music/background.mp3`. Returns `(AudioSegment, music_source_str)` tuple.
+- **`generate_music(project_dir, music_file=None)`**: Resolve music source and return AudioSegment. Priority: (1) existing `background.mp3` in project `music/` dir, (2) `music_file` argument → copy to project then load, (3) bundled demo music matching project slug, (4) procedural numpy fallback. All sources are trimmed/faded to MUSIC_LOOP_SECONDS and saved as `output/<slug>/music/background.mp3`. Returns `(AudioSegment, music_source_str)` tuple. **Does NOT write direction.json** — the caller (cli.py run pipeline) writes `music_source` after this returns. Step 1 reads `direction.json` to recover existing `music_source` provenance (e.g., `"user:track.mp3"` from a prior `set music-file`). **Resilience**: step 1 wraps the load in try/except — if existing background.mp3 is corrupt (e.g., from interrupted run), deletes it and falls through to steps 2-4.
 - **`generate_procedural_music()`**: Original numpy sine wave ambient drone. A-minor, MUSIC_LOOP_SECONDS duration. Returns AudioSegment.
-- **`load_and_prepare_music(source_path, target_path)`**: Load MP3, trim to MUSIC_LOOP_SECONDS if longer, apply MUSIC_FADE_MS fade-out at the end, save to target_path. Returns AudioSegment.
+- **`load_and_prepare_music(source_path, target_path)`**: Load MP3, trim to MUSIC_LOOP_SECONDS if longer, apply MUSIC_FADE_MS fade-out at the end, save to target_path. Returns AudioSegment. **Also serves as validation** — if the source file is corrupt or not valid audio, `AudioSegment.from_mp3()` raises. No separate validation step needed; callers catch the exception.
 
 **Tests** (in `tests/test_music.py` — green after implementation):
 
@@ -1071,11 +1071,12 @@ File-based music:
 - `test_load_and_prepare_fade_out` — last MUSIC_FADE_MS of output fades to near-silence
 - `test_load_and_prepare_short_file_no_trim` — file shorter than MUSIC_LOOP_SECONDS used as-is
 
-Source resolution:
-- `test_generate_music_existing_background` — background.mp3 already exists → load it, don't overwrite
-- `test_generate_music_user_file` — music_file arg → copies to music/, returns AudioSegment
-- `test_generate_music_bundled_demo` — project slug matches demo → uses bundled music
-- `test_generate_music_procedural_fallback` — no file, no bundled → numpy sine wave
+Source resolution (each test also verifies the `music_source` string in the returned tuple):
+- `test_generate_music_existing_background` — background.mp3 already exists → load it, don't overwrite. Returns music_source from direction.json (preserves provenance).
+- `test_generate_music_existing_reads_provenance` — set up background.mp3 + direction.json with `"user:custom.mp3"`, verify returns `"user:custom.mp3"` not `"existing"`.
+- `test_generate_music_user_file` — music_file arg → copies to music/, returns `(AudioSegment, "user:<filename>")`
+- `test_generate_music_bundled_demo` — project slug matches demo → uses bundled music, returns `"bundled:<slug>.mp3"`
+- `test_generate_music_procedural_fallback` — no file, no bundled → numpy sine wave, returns `"procedural"`
 - `test_generate_music_saves_to_project` — all paths save background.mp3 in project music/ dir
 
 Commit: "Implement music with bundled CC0, user-provided, and procedural fallback"
@@ -1212,8 +1213,9 @@ Subcommand routing:
 - `test_cli_set_voice` — `set tell_tale_heart voice "the old man" en-US-TonyNeural` updates cast.json
 - `test_cli_set_voice_invalidates` — after set voice, voice_demos/ and segments/ are deleted
 - `test_cli_set_music_off` — `set tell_tale_heart music off` updates direction.json
-- `test_cli_set_music_file` — `set tell_tale_heart music-file path/to/track.mp3` copies file to music/background.mp3
+- `test_cli_set_music_file` — `set tell_tale_heart music-file path/to/track.mp3` copies file to music/background.mp3, writes `music_source: "user:track.mp3"` to direction.json
 - `test_cli_set_music_file_missing` — `set tell_tale_heart music-file nonexistent.mp3` → SystemExit
+- `test_cli_set_music_file_invalid_audio` — `set tell_tale_heart music-file photo.jpg` → SystemExit (pydub can't load)
 - `test_cli_set_music_file_invalidates` — after set music-file, samples/ and final/ deleted
 - `test_cli_set_reverb_room` — `set tell_tale_heart reverb-room 0.5` updates effects.json
 - `test_cli_set_nonexistent_project` — `set nonexistent voice "x" en-US-TonyNeural` → SystemExit with clear message
