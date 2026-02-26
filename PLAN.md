@@ -494,6 +494,26 @@ INVALIDATION MAP
 
 Implementation: a dict mapping setting keys to lists of subdirectories to delete. Simple `shutil.rmtree()` for each with `os.path.exists()` guard.
 
+### `set` Key → Artifact → Field Mapping
+
+```
+SET KEY → ARTIFACT MAPPING
+══════════════════════════
+
+  Key               │ Artifact File    │ JSON Path                              │ Value Type
+  ──────────────────┼──────────────────┼────────────────────────────────────────┼───────────
+  voice             │ cast.json        │ .characters[<speaker>].voice           │ string (voice ID)
+  narrator-voice    │ cast.json        │ .narrator.voice                        │ string (voice ID)
+  narrator-dialogue │ cast.json        │ .narrator.dialogue_voice               │ string (voice ID)
+  music             │ direction.json   │ .no_music                              │ bool (on→false, off→true)
+  music-db          │ direction.json   │ .music_bed_db                          │ float (negative dB)
+  reverb            │ effects.json     │ .per_segment.dialogue.reverb           │ dict or null (on→defaults, off→null)
+  reverb-room       │ effects.json     │ .per_segment.dialogue.reverb.room_size │ float (0.0-1.0)
+  reverb-wet        │ effects.json     │ .per_segment.dialogue.reverb.wet_level │ float (0.0-1.0)
+```
+
+Note: `set voice` requires `<speaker>` argument to identify which character. All other keys take a single value argument. The `set` subcommand validates the project exists before loading artifacts.
+
 ### output.json Manifest
 
 Generated at export time (Step 6), saved alongside the final MP3 in `output/<slug>/final/output.json`. Read-only provenance — not consumed by the pipeline.
@@ -694,13 +714,20 @@ PREVIEW GATE FLOW
 
 ### Resumability
 
-The pipeline checks for existing artifacts before each step. If an artifact exists and its inputs haven't changed, the step is skipped:
+Resumability is split between `new` and `run` to match the two-step workflow:
 
 ```
 RESUMABILITY CHECKS
 ═══════════════════
-  Step 1 (Parse):     skip if script.json exists AND source .txt mtime unchanged
-  Step 2 (Voices):    skip if cast.json exists AND both script.json AND .cast.json mtime unchanged
+
+  `new` owns parse + voices (Steps 1-2):
+  ─────────────────────────────────────────
+  `new` always writes fresh configs. To re-parse after editing the source
+  .txt file, run `new` again. It overwrites script.json, cast.json,
+  direction.json, effects.json.
+
+  `run` owns audio generation (Steps 3-7):
+  ─────────────────────────────────────────
   Step 3 (Demos):     skip if voice_demos/ has expected file count AND cast.json mtime unchanged
   Step 4 (TTS):       skip if segments/ has expected file count matching script.json
   Step 5 (Music):     skip if music/ambient.mp3 exists
@@ -708,10 +735,12 @@ RESUMABILITY CHECKS
   Step 7 (Export):    always re-run (fast, final output)
 ```
 
+- `run` assumes script.json and cast.json exist (created by `new`). If missing → SystemExit.
 - Resumability uses **mtime comparison** — simple, no hashing of content
-- When a step is skipped, verbose mode prints `"[skip] Parse: script.json is up to date"`
-- To force a full re-run, delete the output directory or use `--force` flag
+- When a step is skipped, verbose mode prints `"[skip] TTS: segments/ is up to date"`
+- `run --force` deletes generated artifacts (voice_demos/, segments/, music/, samples/, final/) but preserves configs (script.json, cast.json, direction.json, effects.json)
 - Partial TTS runs resume: if `segments/` has 20 of 43 expected files, TTS starts from segment 21
+- **Editing source .txt**: requires running `new` again to re-parse. `run` does NOT re-check source file freshness — this is by design to keep the new/run boundary clean.
 
 ### Chapter splitting (longer stories)
 
@@ -1123,6 +1152,7 @@ Subcommand routing:
 - `test_cli_set_voice_invalidates` — after set voice, voice_demos/ and segments/ are deleted
 - `test_cli_set_music_off` — `set tell_tale_heart music off` updates direction.json
 - `test_cli_set_reverb_room` — `set tell_tale_heart reverb-room 0.5` updates effects.json
+- `test_cli_set_nonexistent_project` — `set nonexistent voice "x" en-US-TonyNeural` → SystemExit with clear message
 - `test_cli_set_invalid_key` — `set tell_tale_heart badkey val` → SystemExit
 - `test_cli_list_projects` — `list` shows all project dirs under output/
 - `test_cli_list_empty` — `list` with no projects → "No projects found"
