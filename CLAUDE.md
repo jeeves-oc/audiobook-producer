@@ -40,7 +40,9 @@ This project is built test-first with **parallel module development**. Modules a
 
 See PLAN.md "TDD Phases — Parallel Ralph Loop Iteration Guide" for the full layer structure and test inventory.
 
-**Done condition**: all tests green AND `python producer.py -v` produces a playable MP3 in `output/tell_tale_heart/final/` with bookend intro/outro and all intermediate artifacts.
+**Done condition**: all tests green AND both demos produce playable MP3s:
+1. `python producer.py demo/tell_tale_heart.txt -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
+2. `python producer.py demo/the_open_window.txt -v` → `output/the_open_window/final/the_open_window.mp3`
 
 ## Architecture
 

@@ -2,11 +2,15 @@
 
 ## Context
 
-Build a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, and background music. The user has no API keys, so we use free tools only. MVP targets a single short story ("The Tell-Tale Heart" by Poe) as a bundled demo. New public GitHub repo.
+Build a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, and background music. The user has no API keys, so we use free tools only. Two bundled demos: "The Tell-Tale Heart" (Poe, first-person, 3 characters) and "The Open Window" (Saki, third-person, 6 characters with aliases). New public GitHub repo.
 
 **Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest tests/ -v` to see what's red.
 
-**Done condition**: `pytest tests/ -v` is all green AND `python producer.py -v` produces a playable MP3 in `output/tell_tale_heart/final/` with distinct character voices, bookend intro/outro, background music, and all intermediate artifacts (script.json, cast.json, direction.json, effects.json, voice_demos/, segments/).
+**Done condition**: `pytest tests/ -v` is all green AND both demo stories produce playable MP3s:
+1. `python producer.py demo/tell_tale_heart.txt -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
+2. `python producer.py demo/the_open_window.txt -v` → `output/the_open_window/final/the_open_window.mp3`
+
+Each output must have distinct character voices, bookend intro/outro with cast introductions, background music, and all intermediate artifacts (script.json, cast.json, direction.json, effects.json, voice_demos/, segments/).
 
 ## Project Structure
 
@@ -108,16 +112,16 @@ DEPENDENCY GRAPH
        └────────────────┴───────┬───────┴────────────┘           │
                                 │                                │
                          assembly.py ◄───────────────────────────┘
-                         (bookend structure,
-                          pauses, music overlay)
-                                │
-                          exporter.py
-                          (MP3 output + metadata)
-                                │
-                          artifacts.py
-                          (output dirs, intermediate
-                           JSON, voice demos, preview,
-                           resumability, chapter split)
+                         (bookend structure,              │
+                          pauses, music overlay)          │
+                                │                         │
+                          exporter.py                     │
+                          (MP3 output + metadata)         │
+                                │                         │
+                          artifacts.py ◄──────────────────┘
+                          (output dirs, intermediate      (voice demos
+                           JSON, voice demos, preview,     use tts.
+                           resumability, chapter split)    generate_single)
                                 │
                             cli.py
                             (argparse, validation,
@@ -332,10 +336,10 @@ OUTRO SCRIPT
 ```
 
 ### Step 3: Generate TTS audio (sequential, via edge-tts)
-- `generate_tts()` is a **sync function** that calls `asyncio.run()` internally for each segment (edge-tts is async-only). This keeps the rest of the pipeline synchronous.
-- One `edge_tts.Communicate()` call per segment
+- **`generate_single(text, voice, output_path)`**: Generate one TTS clip. Sync wrapper around `asyncio.run()` + `edge_tts.Communicate()`. Includes retry logic. Used by both `generate_tts()` and voice demo generation in `artifacts.py`.
+- **`generate_tts(segments, output_dir)`**: Generate TTS for all segments. Calls `generate_single()` per segment.
 - Processes ALL segments: intro + story + outro
-- Save directly to `output/<slug>/segments/` as numbered MP3 files (e.g., `000_intro_narrator.mp3`)
+- Save directly to `output_dir` as numbered MP3 files (e.g., `000_intro_narrator.mp3`)
 - **Retry logic**: exponential backoff (base 1s), up to 3 retries per segment. Retries trigger on network errors, HTTP errors, or when the output file is 0 bytes (corrupted/empty response).
 - **Progress output**: always print segment counter (`Generating segment 12/47...`). In verbose mode, include ETA (`~1 min remaining`). Non-verbose mode uses a compact single-line counter.
 - Small sleep between successful calls to avoid throttling
@@ -349,11 +353,11 @@ OUTRO SCRIPT
 - **`effects.py`** — per-segment audio processing after TTS generation
 - **Reverb on dialogue**: subtle room reverb via pedalboard on dialogue segments. Gives dialogue spatial depth vs flat narration. Pedalboard is optional — graceful fallback to unprocessed audio if not installed.
 - **Volume normalization**: normalize levels across all segments so quiet and loud speakers are balanced.
-- **Processing pipeline per segment**:
-  1. Load TTS MP3
+- **Processing pipeline per segment** (in-place in `output/<slug>/segments/` — overwrites raw TTS files):
+  1. Load TTS MP3 from `output/<slug>/segments/`
   2. Apply reverb if dialogue (pedalboard, optional)
   3. Normalize volume levels across segments
-  4. Save processed audio back
+  4. Save processed audio back to same path (overwrite)
 - Procedural SFX (heartbeat, room tone, ambience) deferred to Future Work — requires a scene annotation system that doesn't exist yet. See Future Work section.
 
 ### Step 5: Assemble (bookend music)
@@ -573,7 +577,7 @@ PREVIEW GATE FLOW
 - Prompts: `"Listen to voice demos in output/<project>/voice_demos/. Continue? [Y/n] "`
 - `Y` or Enter → proceed to full TTS generation
 - `n` → skip preview, proceed to TTS silently
-- The gate is ONLY active in `-v` mode. Without `-v`, voice demos are still generated (for inspection) but no prompt is shown.
+- The gate is ONLY active in `-v` mode AND when `sys.stdin.isatty()` is True (interactive terminal). Without `-v`, or in non-interactive environments (Ralph Loop, CI, piped stdin), voice demos are still generated but no prompt is shown. This prevents the pipeline from hanging in automated environments.
 
 ### Resumability
 
@@ -769,7 +773,9 @@ When multiple agents run simultaneously on Layer 1:
 
 ### Layer 0: Foundation `[sonnet]`
 
-**Creates**: `audiobook_producer/__init__.py`, `audiobook_producer/constants.py`, `audiobook_producer/models.py`, `tests/conftest.py`, `producer.py`, `requirements.txt`
+**Creates**: `audiobook_producer/__init__.py`, `audiobook_producer/constants.py`, `audiobook_producer/models.py`, `tests/conftest.py`
+
+**Pre-existing** (already committed): `producer.py`, `requirements.txt`
 
 **Tests** (in `tests/test_models.py` — green after implementation):
 - `test_segment_dataclass` — fields exist, defaults work
@@ -801,6 +807,7 @@ Commit: "Add package skeleton with constants, models, and Layer 1 test stubs"
 - `test_parse_long_segment_split` — >500 char segment → split at sentence boundary
 - `test_parse_empty_paragraphs_skipped` — whitespace-only paragraphs produce no segments
 - `test_parse_pre_attribution` — `the old man cried out, "Who's there?"` → dialogue Segment with speaker="the old man"
+- `test_parse_variety_of_verbs` — test with "whispered", "exclaimed", "pursued", "announced", "admitted" — all should extract speaker correctly (The Open Window uses these)
 
 All tests use inline string inputs only. `test_parse_full_story` lives in Layer 4 (integration).
 
@@ -843,8 +850,13 @@ Commit: "Implement voice assignment with cast system and bookend scripts"
 
 **File**: `audiobook_producer/tts.py`
 **Tests** (in `tests/test_tts.py` — green after implementation):
-- `test_tts_generates_files` — mock edge_tts, verify N files created in temp dir
-- `test_tts_retry_on_failure` — mock edge_tts to fail once then succeed, verify retry
+
+generate_single:
+- `test_tts_generate_single` — mock edge_tts, verify single MP3 file created at specified output_path
+- `test_tts_generate_single_retry` — mock edge_tts to fail once then succeed, verify retry works for single call
+
+generate_tts:
+- `test_tts_generates_files` — mock edge_tts, verify N files created in specified output directory
 - `test_tts_retry_exhausted` — mock edge_tts to always fail, verify raises after 3 retries
 - `test_tts_validates_output_size` — mock edge_tts to write 0-byte file, verify treated as failure
 - `test_tts_progress_output` — capture stdout, verify segment counter appears
@@ -978,8 +990,9 @@ Input validation:
 - `test_validate_ffmpeg_missing` — SystemExit when ffmpeg not found
 
 Preview gate:
-- `test_preview_gate_verbose` — in `-v` mode, pipeline calls input() after voice demo step (mock input)
+- `test_preview_gate_verbose` — in `-v` mode with isatty()=True, pipeline calls input() after voice demo step (mock input)
 - `test_preview_gate_nonverbose` — without `-v`, no input() call — proceeds silently
+- `test_preview_gate_noninteractive` — `-v` mode but isatty()=False (piped stdin) — no input() call, proceeds silently
 
 Resumability integration:
 - `test_force_flag_deletes_output` — `--force` removes existing output dir before starting
@@ -993,11 +1006,20 @@ Commit: "Add CLI with argument parsing, validation, preview gate, and resumabili
 ### Layer 4: Integration `[opus]`
 
 **Tests** (in `tests/test_integration.py` — green after implementation):
-- `test_parse_full_story` — parse `demo/tell_tale_heart.txt`, verify segments > 0 and no empty text fields
-- `test_full_pipeline_mocked_tts` — mock edge_tts, run full pipeline on demo story, verify output MP3 exists and is valid
-- `test_full_pipeline_no_music` — same as above with --no-music
-- `test_full_pipeline_has_intro_outro` — verify intro title announcement and outro credits are present in segment list
-- `test_full_pipeline_bookend_structure` — verify output audio has music at start and end, silence in the middle section
+
+Tell-Tale Heart (first-person narrator, 3 cast members):
+- `test_parse_tell_tale_heart` — parse `demo/tell_tale_heart.txt`, verify segments > 0 and no empty text fields
+- `test_pipeline_tell_tale_heart` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid
+- `test_pipeline_tell_tale_heart_intro_outro` — verify intro has title/author/cast, outro has credits + "thank you"
+
+The Open Window (third-person, 6 cast members with aliases):
+- `test_parse_open_window` — parse `demo/the_open_window.txt`, verify segments > 0 and multiple speakers found
+- `test_pipeline_open_window` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid
+- `test_pipeline_open_window_aliases` — verify "the child" and "the niece" map to the same voice (alias resolution)
+
+Cross-cutting:
+- `test_full_pipeline_no_music` — run with --no-music, verify no music in output
+- `test_full_pipeline_bookend_structure` — verify output audio has music at start and end, silence in the middle
 - `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/, final/
 - `test_full_pipeline_resume` — run pipeline twice; second run skips TTS (verify TTS mock call count = 0 on second run)
 
@@ -1010,16 +1032,15 @@ Commit: "Wire up full pipeline and verify end-to-end integration"
 No new tests. Manual verification only.
 
 - Write README.md, LICENSE (MIT)
-- Run `python producer.py -v` for real (with actual edge-tts network calls)
-- Verify output MP3 plays correctly with bookend intro/outro
-- Commit: "Add documentation and verify end-to-end output"
+- Run both demos for real (with actual edge-tts network calls):
+  - `python producer.py demo/tell_tale_heart.txt -v`
+  - `python producer.py demo/the_open_window.txt -v`
+- Verify both output MP3s play correctly with bookend intro/outro and distinct character voices
+- Commit: "Add documentation and verify end-to-end output for both demos"
 
 ---
 
 ## Future Work
-
-### Multi-voice demo story
-The Open Window by Saki is already staged at `demo/the_open_window.txt`. Add it as a second demo option via `--demo open-window` CLI flag. 6 speaking characters provide a good showcase for distinct voice assignment.
 
 ### Async/concurrent TTS generation
 Sequential TTS takes ~1-2 minutes for a short story. Replace the sequential loop in `tts.py` with `asyncio.gather()` + `Semaphore(5)` to limit concurrency while still respecting rate limits. This is the single biggest performance win available.
