@@ -41,11 +41,13 @@ def slug_from_path(story_path: str) -> str:
     return slug
 
 
-def init_output_dir(story_path: str, output_base: str = OUTPUT_DIR) -> str:
+def init_output_dir(story_path: str, output_base: str | None = None) -> str:
     """Create output/<slug>/ and all subdirectories.
 
     Returns the project directory path.
     """
+    if output_base is None:
+        output_base = OUTPUT_DIR
     slug = slug_from_path(story_path)
     project_dir = os.path.join(output_base, slug)
 
@@ -162,11 +164,13 @@ def get_project_status(project_dir: str) -> dict:
     return status
 
 
-def list_projects(output_base: str = OUTPUT_DIR) -> list[str]:
+def list_projects(output_base: str | None = None) -> list[str]:
     """List all project slugs under the output directory.
 
     Returns sorted list of directory names that contain a script.json.
     """
+    if output_base is None:
+        output_base = OUTPUT_DIR
     if not os.path.exists(output_base):
         return []
     projects = []
