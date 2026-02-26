@@ -47,7 +47,7 @@ The pipeline runs 6 sequential steps:
 
 1. **Parse** — Regex-based text segmentation. First-person "I" attributions map to narrator.
 2. **Assign voices** — Hash-based deterministic mapping: `hash(speaker) % len(voices)`. Voice set directly on `Segment.voice`.
-3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). Progress counter + ETA.
+3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). `generate_tts()` is sync, uses `asyncio.run()` internally per segment. Progress counter + ETA.
 4. **Generate music** — Procedural ambient drone via numpy sine waves (A-minor).
 5. **Assemble** — Concatenate with type-aware pauses (300/500/700ms), overlay music at -22dB, fade in/out.
 6. **Export** — MP3 at 192kbps with metadata tags.
