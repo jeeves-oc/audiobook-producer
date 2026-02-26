@@ -1,0 +1,16 @@
+{
+  "narrator": {
+    "voice": "en-US-GuyNeural",
+    "description": "a most unreliable narrator"
+  },
+  "cast": {
+    "the old man": {
+      "voice": "en-US-DavisNeural",
+      "description": "a frail old man with a pale blue vulture eye"
+    },
+    "officers": {
+      "voice": "en-GB-ThomasNeural",
+      "description": "three officers of the police"
+    }
+  }
+}

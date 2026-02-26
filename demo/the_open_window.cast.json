@@ -1,0 +1,31 @@
+{
+  "narrator": {
+    "voice": "en-US-GuyNeural",
+    "description": "your narrator"
+  },
+  "cast": {
+    "the niece": {
+      "voice": "en-US-AriaNeural",
+      "description": "Vera, a very self-possessed young lady of fifteen",
+      "aliases": ["the child", "the self-possessed young lady"]
+    },
+    "Framton": {
+      "voice": "en-US-TonyNeural",
+      "description": "Framton Nuttel, a nervous visitor undergoing a nerve cure",
+      "aliases": ["the caller"]
+    },
+    "Mrs. Sappleton": {
+      "voice": "en-GB-SoniaNeural",
+      "description": "Mrs. Sappleton, the lady of the house"
+    },
+    "the bearer of the white mackintosh": {
+      "voice": "en-US-DavisNeural",
+      "description": "Mr. Sappleton, returning from a day's shooting",
+      "aliases": []
+    },
+    "his sister": {
+      "voice": "en-US-JennyNeural",
+      "description": "Framton's sister, who arranged the visit"
+    }
+  }
+}

@@ -37,7 +37,9 @@ audiobook-producer/
     test_integration.py
   demo/
     tell_tale_heart.txt        # Bundled demo story (public domain)
+    tell_tale_heart.cast.json  # Curated voice cast for Tell-Tale Heart
     the_open_window.txt        # Multi-voice demo story
+    the_open_window.cast.json  # Curated voice cast for The Open Window
   producer.py                  # thin entry point: from audiobook_producer.cli import main
   requirements.txt
   README.md
@@ -201,31 +203,66 @@ Music plays only at the beginning and end — not during the story body. This cr
 - Known limitations: nested quotes, single-quote dialogue, dialogue split across paragraphs, and attribution-less dialogue are not handled. These are acceptable for the MVP demo.
 
 ### Step 2: Assign voices + generate bookend scripts
-- **`assign_voices(segments)`**: Assign voices to story segments
-  - **Narrator narration** gets `en-US-GuyNeural` (American, deep, authoritative) — internal monologue and descriptive prose
-  - **Narrator spoken dialogue** gets `en-GB-RyanNeural` (British accent) — when the narrator character speaks aloud (dialogue segments where speaker="narrator"). This creates an audible distinction between the narrator's inner thoughts and their spoken words, adding dramatic range to first-person stories like "The Tell-Tale Heart".
-  - 13 character voices pooled from EN-US/EN-GB male/female neural voices
-  - Deterministic via hash: `int(hashlib.sha256(name.encode()).hexdigest(), 16) % len(voices)` — stable across runs and text edits
-  - Voice is assigned directly onto `Segment.voice` field (no separate dict)
+
+#### Voice assignment
+
+- **`assign_voices(segments, cast=None)`**: Assign voices to story segments using a priority system:
 
 ```
-Voice assignment logic:
-┌─────────────────────────┐
-│ segment.speaker ==      │
-│ "narrator"?             │
-│                         │
-│  YES ──┐     NO ──────────▶ sha256(speaker) % len(pool)
-│        │                │
-│        ▼                │
-│  segment.type ==        │
-│  "dialogue"?            │
-│                         │
-│  YES: en-GB-RyanNeural  │
-│  NO:  en-US-GuyNeural   │
-└─────────────────────────┘
+Voice assignment (priority order):
+┌─────────────────────────────────────────────────────┐
+│ 1. NARRATOR RULES (always applied first)            │
+│    narrator + narration → NARRATOR_VOICE             │
+│    narrator + dialogue  → NARRATOR_DIALOGUE_VOICE    │
+│                                                     │
+│ 2. CAST FILE (if provided)                          │
+│    cast["old man"]["voice"] → en-US-DavisNeural     │
+│    Explicit, curated assignment per character        │
+│                                                     │
+│ 3. HASH FALLBACK (for unlisted/unknown characters)  │
+│    sha256(speaker) % len(remaining_pool)            │
+│    Deterministic, stable across runs                │
+└─────────────────────────────────────────────────────┘
 ```
 
-- **`generate_intro_segments(title, author, segments)`**: Build the opening sequence as a list of Segments. Uses voice assignments already set on story segments to find character names and their voices.
+- Voice is assigned directly onto `Segment.voice` field (no separate dict)
+- Cast data loaded from JSON sidecar file (see Cast File Format below)
+
+#### Cast file format
+
+Each story can have an optional `.cast.json` sidecar file alongside its `.txt` file. If present, it provides curated voice assignments and character descriptions for the intro.
+
+```json
+{
+  "narrator": {
+    "voice": "en-US-GuyNeural",
+    "description": "a most unreliable narrator"
+  },
+  "cast": {
+    "the old man": {
+      "voice": "en-US-DavisNeural",
+      "description": "a frail old man with a pale blue vulture eye"
+    },
+    "the niece": {
+      "voice": "en-US-AriaNeural",
+      "description": "Vera, a very self-possessed young lady of fifteen",
+      "aliases": ["the child", "the self-possessed young lady"]
+    }
+  }
+}
+```
+
+Fields:
+- **`narrator`**: Optional narrator override (voice + description for intro). Falls back to NARRATOR_VOICE constant.
+- **`cast`**: Map of parser-extracted speaker name → voice + description.
+- **`aliases`** (optional): List of alternate names the parser might extract for the same character. `assign_voices()` resolves aliases to the primary name before assignment. This handles classic literature where one character is called "the niece", "the child", "Vera", etc.
+
+- **`load_cast(story_path)`**: Look for `<basename>.cast.json` next to the `.txt` file (e.g., `demo/tell_tale_heart.cast.json`). Returns cast dict or empty dict if not found.
+- Stories without a cast file still work — all characters get hash-based pool voices and names-only intros.
+
+#### Bookend script generation
+
+- **`generate_intro_segments(title, author, segments, cast=None)`**: Build the opening sequence. Uses voice assignments on segments + cast descriptions.
 
 ```
 INTRO SCRIPT
@@ -233,9 +270,20 @@ INTRO SCRIPT
   Narrator: "This is {title}, by {author}."
   Narrator: "The characters will be..."
   For each unique character (not narrator, not unknown):
-    [Character voice]: "{speaker name}"
-    Narrator: "using {voice_name}."
+    [Character voice]: "{speaker name},"
+    Narrator: "{description}, using {voice_name}."
   Narrator: "And your narrator, using {NARRATOR_VOICE}."
+```
+
+Example for Tell-Tale Heart:
+```
+  Narrator: "This is The Tell-Tale Heart, by Edgar Allan Poe."
+  Narrator: "The characters will be..."
+  [en-US-DavisNeural]: "The Old Man,"
+  Narrator: "a frail old man with a vulture eye, using en-US-DavisNeural."
+  [en-GB-ThomasNeural]: "The Officers,"
+  Narrator: "officers of the police, using en-GB-ThomasNeural."
+  Narrator: "And your narrator, using en-US-GuyNeural."
 ```
 
 - **`generate_outro_segments(title, author, segments)`**: Build the closing sequence.
@@ -524,18 +572,27 @@ Commit: "Implement parser with dialogue extraction and speaker attribution"
 
 **File**: `audiobook_producer/voices.py`
 **Tests** (in `tests/test_voices.py` — green after implementation):
+
+Voice assignment:
 - `test_narrator_gets_narrator_voice` — narrator narration segments get `en-US-GuyNeural`
 - `test_narrator_dialogue_gets_distinct_voice` — narrator dialogue segments get `en-GB-RyanNeural` (British)
-- `test_character_gets_voice` — non-narrator speaker gets a voice from the pool
-- `test_voice_determinism` — same speaker list → same assignments on repeated calls AND across separate process invocations (sha256 is stable)
+- `test_cast_overrides_hash` — character in cast file gets the cast voice, not a hash-based one
+- `test_cast_missing_character_falls_back` — character NOT in cast falls back to sha256 hash pool
+- `test_cast_alias_resolves` — "the child" resolves to "the niece" entry and gets the same voice
+- `test_load_cast_file` — loads `.cast.json` sidecar, returns dict with voice + description + aliases
+- `test_load_cast_missing_file` — no cast file → returns empty dict (no crash)
+- `test_voice_determinism` — same speaker list → same assignments on repeated calls (sha256 is stable)
 - `test_voice_stability` — adding a speaker doesn't change existing speakers' voices
 - `test_many_speakers_wrap` — 20 speakers don't crash (hash wraps around pool)
-- `test_generate_intro_segments` — given segments with voices assigned, produces correct intro sequence: title announcement, character intros in their voices, narrator self-intro
+
+Bookend scripts:
+- `test_generate_intro_segments` — produces correct intro sequence: title, character intros with descriptions, narrator self-intro
 - `test_generate_outro_segments` — produces credits and "thank you for listening"
 - `test_intro_excludes_unknown_speakers` — speakers named "unknown" are not introduced
 - `test_intro_character_speaks_own_name` — each character's name segment uses that character's voice
+- `test_intro_includes_cast_descriptions` — when cast has descriptions, intro narration includes them
 
-Commit: "Implement voice assignment with bookend script generation"
+Commit: "Implement voice assignment with cast system and bookend scripts"
 
 ---
 
