@@ -19,8 +19,8 @@ pytest tests/ -v
 # Run with bundled demo story
 python producer.py -v
 
-# Run with custom input
-python producer.py story.txt -o output.mp3
+# Run with custom input (output to output/<slug>/)
+python producer.py story.txt -o mydir/
 
 # List available TTS voices
 python producer.py --list-voices
@@ -40,7 +40,7 @@ This project is built test-first with **parallel module development**. Modules a
 
 See PLAN.md "TDD Phases — Parallel Ralph Loop Iteration Guide" for the full layer structure and test inventory.
 
-**Done condition**: all tests green AND `python producer.py -v` produces a playable MP3 with bookend intro/outro.
+**Done condition**: all tests green AND `python producer.py -v` produces a playable MP3 in `output/tell_tale_heart/final/` with bookend intro/outro and all intermediate artifacts.
 
 ## Architecture
 
@@ -54,9 +54,10 @@ audiobook_producer/
   voices.py       # assign_voices(), bookend scripts (intro/outro)
   tts.py          # generate_tts(), edge-tts, retry logic
   music.py        # generate_ambient_music(), numpy synthesis
-  effects.py      # reverb (pedalboard), procedural SFX, normalization
+  effects.py      # reverb (pedalboard), normalization
   assembly.py     # assemble(), bookend music structure
   exporter.py     # export() MP3 + metadata
+  artifacts.py    # output dirs, intermediate JSON, voice demos, resumability
   cli.py          # argparse, validation, pipeline orchestration
 ```
 
@@ -66,9 +67,11 @@ The pipeline:
 2. **Assign voices + bookends** — sha256-based deterministic voice mapping. Narrator narration → American, narrator dialogue → British. Generate intro/outro segment scripts.
 3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). Processes all segments: intro + story + outro.
 4. **Generate music** — Procedural ambient drone via numpy sine waves (A-minor).
-4b. **Apply effects** — Reverb on dialogue (pedalboard, optional), volume normalization, procedural SFX.
+4b. **Apply effects** — Reverb on dialogue (pedalboard, optional), volume normalization.
 5. **Assemble** — Bookend structure: music intro → narrator intro over music bed → story with type-aware pauses (no music) → narrator outro over music bed → music fade out.
-6. **Export** — MP3 at 192kbps with metadata tags.
+6. **Export** — MP3 at 192kbps with metadata tags to `output/<slug>/final/`.
+
+Each pipeline step writes intermediate artifacts to `output/<slug>/` (script.json, cast.json, segments/, etc.) for inspection and resumability. In `-v` mode, voice demos are generated before full TTS with a preview gate prompt.
 
 ## Testing
 
@@ -84,7 +87,8 @@ Each module has its own test file in `tests/`. Shared fixtures in `tests/conftes
 
 - **pedalboard is optional**: imported via `try/except ImportError` in effects.py with graceful fallback
 - **hashlib.sha256 for voice assignment**: NOT `hash()` — Python's `hash()` is randomized per process since 3.3
-- **Temp files**: created with `tempfile.mkdtemp()`, cleaned up in `finally` block via `shutil.rmtree()`
+- **Output directory**: `output/<slug>/` per production with intermediate JSON artifacts, voice demos, segments, music, and final MP3. Gitignored.
+- **Resumability**: pipeline checks mtime on artifacts and skips fresh steps. `--force` to re-run everything.
 - **Voice assignment is deterministic**: sha256-based, stable across runs and text edits
 - **Input validation**: fail fast — check file exists, non-empty, segments produced, ffmpeg installed
 - **Demo stories**: bundled at `demo/tell_tale_heart.txt` (Poe) and `demo/the_open_window.txt` (Saki), both public domain

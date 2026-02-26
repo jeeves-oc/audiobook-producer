@@ -6,7 +6,7 @@ Build a Python CLI app that transforms public domain text into full-cast audio d
 
 **Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest tests/ -v` to see what's red.
 
-**Done condition**: `pytest tests/ -v` is all green AND `python producer.py -v` produces a playable MP3 file of "The Tell-Tale Heart" with distinct character voices, bookend intro/outro, and background music.
+**Done condition**: `pytest tests/ -v` is all green AND `python producer.py -v` produces a playable MP3 in `output/tell_tale_heart/final/` with distinct character voices, bookend intro/outro, background music, and all intermediate artifacts (script.json, cast.json, direction.json, effects.json, voice_demos/, segments/).
 
 ## Project Structure
 
@@ -20,9 +20,10 @@ audiobook-producer/
     voices.py                  # assign_voices(), voice pool, bookend scripts
     tts.py                     # generate_tts(), edge-tts integration, retry
     music.py                   # generate_ambient_music(), numpy synthesis
-    effects.py                 # audio effects: reverb, procedural SFX
+    effects.py                 # audio effects: reverb, normalization
     assembly.py                # assemble(), bookend music structure
     exporter.py                # export() MP3 + metadata tags
+    artifacts.py               # output directory, intermediate files, resumability
     cli.py                     # argparse, input validation, main()
   tests/
     conftest.py                # shared fixtures (tiny_mp3, sample segments)
@@ -33,6 +34,7 @@ audiobook-producer/
     test_effects.py
     test_assembly.py
     test_exporter.py
+    test_artifacts.py
     test_cli.py
     test_integration.py
   demo/
@@ -40,6 +42,31 @@ audiobook-producer/
     tell_tale_heart.cast.json  # Curated voice cast for Tell-Tale Heart
     the_open_window.txt        # Multi-voice demo story
     the_open_window.cast.json  # Curated voice cast for The Open Window
+  output/                      # gitignored — one subfolder per production
+    tell_tale_heart/           # example production directory
+      script.json              # parsed segments as JSON
+      cast.json                # resolved voice assignments
+      direction.json           # assembly instructions (pauses, bookend timing)
+      effects.json             # effects applied per segment
+      voice_demos/             # character voice samples
+        narrator_pangram.mp3
+        narrator_story.mp3
+        the_old_man_pangram.mp3
+        the_old_man_story.mp3
+      segments/                # individual TTS files, numbered
+        000_intro_narrator.mp3
+        001_intro_old_man.mp3
+        ...
+        042_story_narrator.mp3
+        043_outro_narrator.mp3
+      music/
+        ambient.mp3            # generated background music
+      samples/
+        preview_60s.mp3        # first ~60s of assembled audio
+      chapters/                # chapter-level splits (longer stories)
+        chapter_01.mp3
+      final/
+        tell_tale_heart.mp3    # complete assembled production
   producer.py                  # thin entry point: from audiobook_producer.cli import main
   requirements.txt
   README.md
@@ -75,7 +102,7 @@ DEPENDENCY GRAPH
        ▼                ▼                            ▼
   parser.py        voices.py       music.py    effects.py    tts.py
   (text→segments)  (assign voices,  (numpy      (reverb,      (edge-tts
-                    bookend         synthesis)   proc. SFX)    HTTP calls)
+                    bookend         synthesis)   normalize)    HTTP calls)
                     scripts)
        │                │               │            │           │
        └────────────────┴───────┬───────┴────────────┘           │
@@ -87,12 +114,17 @@ DEPENDENCY GRAPH
                           exporter.py
                           (MP3 output + metadata)
                                 │
+                          artifacts.py
+                          (output dirs, intermediate
+                           JSON, voice demos, preview,
+                           resumability, chapter split)
+                                │
                             cli.py
                             (argparse, validation,
                              pipeline orchestration)
 ```
 
-**Parallel development**: parser, voices, music, effects, and tts are independent — they can be built simultaneously by separate Ralph Loop agents. assembly.py is the merge gate.
+**Parallel development**: parser, voices, music, effects, and tts are independent — they can be built simultaneously by separate Ralph Loop agents. assembly.py is the merge gate. artifacts.py depends on exporter.py and tts.py (for voice demos).
 
 ## Constants
 
@@ -115,6 +147,9 @@ NARRATOR_VOICE = "en-US-GuyNeural"           # narrator internal monologue / nar
 NARRATOR_DIALOGUE_VOICE = "en-GB-RyanNeural" # narrator spoken dialogue (British accent)
 REVERB_ROOM_SIZE = 0.3                       # pedalboard reverb: 0.0-1.0 (subtle)
 REVERB_WET_LEVEL = 0.15                      # pedalboard reverb: dry/wet mix
+PREVIEW_DURATION_MS = 60000                  # 60s preview sample
+VOICE_DEMO_PANGRAM = "The quick brown fox jumps over the lazy dog."
+OUTPUT_DIR = "output"                        # top-level output directory
 ```
 
 ## Pipeline (6 Steps)
@@ -366,11 +401,206 @@ Validate early, fail fast with clear error messages:
 
 ```
 python producer.py                              # Run with bundled demo
-python producer.py story.txt -o output.mp3      # Custom input
+python producer.py story.txt                    # Custom input (output to output/<slug>/)
+python producer.py story.txt -o mydir/          # Custom output directory
 python producer.py --list-voices                # Show available voices
 python producer.py story.txt --no-music         # Skip background music
-python producer.py story.txt -v                 # Verbose progress
+python producer.py story.txt -v                 # Verbose: progress + voice demo preview gate
+python producer.py story.txt --force            # Force re-run, ignore existing artifacts
 ```
+
+- Default output location: `output/<story_slug>/final/<story_slug>.mp3`
+- `-o` accepts a directory path (not a file); final MP3 goes into `<dir>/final/`
+- `-v` enables: detailed progress, ETA, voice demo preview gate with prompt
+- `--force` deletes existing output directory and starts fresh (skips resumability)
+
+## Output Directory Structure
+
+Each production creates a project folder under `output/` containing intermediate artifacts for inspection, iteration, and resumability. The folder name is derived from the story filename (slugified).
+
+```
+OUTPUT DIRECTORY LIFECYCLE
+══════════════════════════
+
+  python producer.py story.txt -v
+       │
+       ▼
+  output/story/               ◄── created at pipeline start
+       │
+       ├── 1. Parse
+       │   ├── script.json         segments as JSON (text, speaker, type)
+       │   └── cast.json           resolved voice assignments + descriptions
+       │
+       ├── 2. Plan
+       │   ├── direction.json      assembly plan: pause durations, bookend timing
+       │   └── effects.json        effects config per segment (reverb, normalize)
+       │
+       ├── 3. Voice Demos  (-v only, before full TTS)
+       │   └── voice_demos/
+       │       ├── narrator_pangram.mp3        "The quick brown fox..."
+       │       ├── narrator_story.mp3          first line from story
+       │       ├── the_old_man_pangram.mp3
+       │       └── the_old_man_story.mp3
+       │
+       │   ◄── PREVIEW GATE (-v mode): user hears demos, prompted to continue
+       │
+       ├── 4. TTS Generation
+       │   └── segments/
+       │       ├── 000_intro_narrator.mp3
+       │       ├── 001_intro_the_old_man.mp3
+       │       ├── ...
+       │       └── 043_outro_narrator.mp3
+       │
+       ├── 5. Music
+       │   └── music/
+       │       └── ambient.mp3
+       │
+       ├── 6. Assembly + Preview
+       │   └── samples/
+       │       └── preview_60s.mp3     first ~60s of assembled output
+       │
+       └── 7. Export
+           ├── chapters/               (longer stories only)
+           │   ├── chapter_01.mp3
+           │   └── chapter_02.mp3
+           └── final/
+               └── story.mp3           complete production
+```
+
+### Artifact formats
+
+**script.json** — parsed segments, written after Step 1:
+```json
+{
+  "metadata": {"title": "The Tell-Tale Heart", "author": "Edgar Allan Poe"},
+  "segments": [
+    {"type": "narration", "text": "TRUE! -- nervous...", "speaker": "narrator"},
+    {"type": "dialogue", "text": "Who's there?", "speaker": "the old man"}
+  ]
+}
+```
+
+**cast.json** — resolved voice assignments, written after Step 2:
+```json
+{
+  "narrator": {
+    "voice": "en-US-GuyNeural",
+    "dialogue_voice": "en-GB-RyanNeural",
+    "description": "a most unreliable narrator"
+  },
+  "characters": {
+    "the old man": {
+      "voice": "en-US-DavisNeural",
+      "description": "a frail old man with a pale blue vulture eye",
+      "source": "cast_file"
+    },
+    "officers": {
+      "voice": "en-GB-ThomasNeural",
+      "description": "three officers of the police",
+      "source": "cast_file"
+    }
+  }
+}
+```
+
+**direction.json** — assembly instructions, written after Step 2:
+```json
+{
+  "intro_music_solo_ms": 4000,
+  "outro_music_solo_ms": 4000,
+  "music_bed_db": -25,
+  "music_fade_ms": 2000,
+  "pauses": {
+    "same_type_ms": 300,
+    "speaker_change_ms": 500,
+    "type_transition_ms": 700
+  },
+  "no_music": false
+}
+```
+
+**effects.json** — effects applied per segment, written after Step 2:
+```json
+{
+  "global": {
+    "normalize": true,
+    "target_dbfs": -20
+  },
+  "per_segment": {
+    "dialogue": {
+      "reverb": {"room_size": 0.3, "wet_level": 0.15}
+    },
+    "narration": {
+      "reverb": null
+    }
+  }
+}
+```
+
+### Voice demos
+
+Each unique character (including narrator) gets two demo clips generated before the full TTS run:
+
+1. **Pangram**: "The quick brown fox jumps over the lazy dog." — tests the voice with all English phonemes
+2. **Story line**: The character's first line of dialogue from the parsed segments — lets the user hear how the voice sounds with actual story content
+
+Demo filenames are slugified: `the_old_man_pangram.mp3`, `the_old_man_story.mp3`. Narrator demos use the narration voice (not the dialogue voice).
+
+### Preview gate (verbose/interactive mode only)
+
+When running with `-v`, the pipeline pauses after voice demo generation:
+
+```
+PREVIEW GATE FLOW
+═════════════════
+                                    ┌──────────────┐
+  Parse → Assign → Write demos ───►│ Play demos?  │
+                                    │ [Y/n/voice]  │
+                                    └──────┬───────┘
+                                           │
+                              ┌────────────┼────────────┐
+                              │            │            │
+                           Y (enter)    voice name    n (skip)
+                              │            │            │
+                         Continue to    Replay that    Skip to
+                         full TTS       character's    full TTS
+                                        demo           silently
+```
+
+- Prints a summary table: each character, their assigned voice, and the demo file path
+- Prompts: `"Listen to voice demos in output/<project>/voice_demos/. Continue? [Y/n] "`
+- `Y` or Enter → proceed to full TTS generation
+- `n` → proceed silently (skip preview, go straight to TTS)
+- The gate is ONLY active in `-v` mode. Without `-v`, voice demos are still generated (for inspection) but no prompt is shown.
+
+### Resumability
+
+The pipeline checks for existing artifacts before each step. If an artifact exists and its inputs haven't changed, the step is skipped:
+
+```
+RESUMABILITY CHECKS
+═══════════════════
+  Step 1 (Parse):     skip if script.json exists AND source .txt mtime unchanged
+  Step 2 (Voices):    skip if cast.json exists AND script.json mtime unchanged
+  Step 3 (Demos):     skip if voice_demos/ has expected file count
+  Step 4 (TTS):       skip if segments/ has expected file count matching script.json
+  Step 5 (Music):     skip if music/ambient.mp3 exists
+  Step 6 (Assembly):  always re-run (fast, depends on all prior outputs)
+  Step 7 (Export):    always re-run (fast, final output)
+```
+
+- Resumability uses **mtime comparison** — simple, no hashing of content
+- When a step is skipped, verbose mode prints `"[skip] Parse: script.json is up to date"`
+- To force a full re-run, delete the output directory or use `--force` flag
+- Partial TTS runs resume: if `segments/` has 20 of 43 expected files, TTS starts from segment 21
+
+### Chapter splitting (longer stories)
+
+Stories with >50 segments get chapter-level splits in `chapters/`:
+- Split at the longest pause gap that falls near a chapter boundary (every ~10 minutes of audio)
+- Each chapter is a standalone MP3 with no music (music only on the first and last chapter)
+- Chapter naming: `chapter_01.mp3`, `chapter_02.mp3`, etc.
+- Short stories (like Tell-Tale Heart) produce no chapter files — only `final/`
 
 ## Dependencies
 
@@ -401,6 +631,10 @@ Detailed, multi-line commit messages: short imperative subject line, blank line,
 - **Bookend music**: Music plays only at the intro and outro — not during the story body. The intro features a title announcement and character introductions (each character says their name in their own voice). The outro has credits and "thank you for listening."
 - **Metadata from file header**: Title is first non-empty line, author follows "by " pattern. Falls back gracefully.
 - **Effects are additive**: All audio processing in `effects.py` is optional and layered on top of raw TTS output. The pipeline works without any effects applied.
+- **Output directory per production**: Each story gets its own folder under `output/` with intermediate artifacts (script, cast, segments, music, etc.). Enables resumability, iteration on individual steps, and easy inspection.
+- **Resumability via mtime**: Pipeline checks whether each step's output exists and is newer than its input. Simple, no content hashing. `--force` flag overrides and re-runs everything.
+- **Voice demos as a quality gate**: Each character gets a pangram + first story line demo before the full TTS run. In verbose mode, the user is prompted to listen and approve before committing to the full (slow) TTS generation pass.
+- **Artifacts are JSON, not pickle**: All intermediate files use human-readable JSON so users can inspect, edit, and version-control them.
 
 ## Testing Strategy — TDD with Mocks
 
@@ -464,6 +698,11 @@ PARALLEL PHASE STRUCTURE
   │  assembly.py + exporter.py      [opus]       │
   └─────────────────────┬────────────────────────┘
                         │
+  LAYER 2b (output management — depends on exporter + tts)
+  ┌──────────────────────────────────────────────┐
+  │  artifacts.py                   [sonnet]     │
+  └─────────────────────┬────────────────────────┘
+                        │
   LAYER 3 (pipeline orchestration)
   ┌──────────────────────────────────────────────┐
   │  cli.py                         [sonnet]     │
@@ -493,9 +732,10 @@ MODEL ASSIGNMENTS
     1   │ voices      │ sonnet │ Hash + branch, straightforward
     1   │ tts         │ sonnet │ Async mocks, moderate complexity
     1   │ music       │ sonnet │ Numpy math, self-contained
-    1   │ effects     │ sonnet │ Pedalboard wrapper + numpy SFX
+    1   │ effects     │ sonnet │ Pedalboard wrapper, normalize
     2   │ assembly    │ opus   │ Bookend structure, pause logic, overlays
     2   │ exporter    │ sonnet │ Simple pydub export
+    2b  │ artifacts   │ sonnet │ File I/O, JSON, directory management
     3   │ cli         │ sonnet │ Argparse boilerplate, validation
     4   │ integration │ opus   │ Full pipeline wiring, debugging
     5   │ docs        │ sonnet │ No code logic
@@ -533,12 +773,13 @@ When multiple agents run simultaneously on Layer 1:
 - `test_segment_dataclass` — fields exist, defaults work
 - `test_constants_exist` — all module-level constants are defined
 
-**Also creates test stubs** for all Layer 1 modules (red — provides targets for parallel agents):
+**Also creates test stubs** for all Layer 1+ modules (red — provides targets for parallel agents):
 - `tests/test_parser.py` with failing `test_parse_narration_only`
 - `tests/test_voices.py` with failing `test_narrator_gets_narrator_voice`
 - `tests/test_tts.py` with failing `test_tts_generates_files`
 - `tests/test_music.py` with failing `test_music_returns_audio_segment`
 - `tests/test_effects.py` with failing `test_reverb_on_dialogue`
+- `tests/test_artifacts.py` with failing `test_init_output_dir`
 
 Commit: "Add package skeleton with constants, models, and Layer 1 test stubs"
 
@@ -667,23 +908,85 @@ Commit: "Implement assembly with bookend music structure and MP3 export"
 
 ---
 
+### Layer 2b: artifacts.py `[sonnet]`
+
+**File**: `audiobook_producer/artifacts.py`
+
+Manages the output directory structure, intermediate artifact files, voice demo generation, preview samples, resumability checks, and chapter splitting.
+
+**Functions**:
+- **`init_output_dir(story_path, output_base=OUTPUT_DIR)`**: Create `output/<slug>/` and all subdirectories. Returns the project directory path. Slug derived from story filename: `tell_tale_heart.txt` → `tell_tale_heart/`.
+- **`write_script_json(project_dir, metadata, segments)`**: Write `script.json` with parsed metadata and segments.
+- **`write_cast_json(project_dir, narrator_info, characters)`**: Write `cast.json` with resolved voice assignments, descriptions, and source (cast_file vs hash).
+- **`write_direction_json(project_dir, **kwargs)`**: Write `direction.json` with assembly config (pauses, bookend timing, no_music flag).
+- **`write_effects_json(project_dir, global_config, per_segment_config)`**: Write `effects.json` with effects config per segment type.
+- **`generate_voice_demos(project_dir, cast, segments)`**: For each character + narrator, generate two TTS clips: pangram and first story line. Saves to `voice_demos/`. Uses `tts.generate_single()` internally.
+- **`generate_preview(project_dir, assembled_audio, duration_ms=PREVIEW_DURATION_MS)`**: Trim assembled audio to first N ms, export to `samples/preview_60s.mp3`.
+- **`split_chapters(project_dir, assembled_audio, segments)`**: For stories with >50 segments, split into chapter-level MP3s in `chapters/`. No-op for short stories.
+- **`check_step_fresh(project_dir, step_name, input_path=None)`**: Resumability check — returns True if step's output exists and input mtime is older than output mtime. Used by CLI to skip completed steps.
+- **`slug_from_path(story_path)`**: Convert story filename to output directory slug.
+
+**Tests** (in `tests/test_artifacts.py` — green after implementation):
+
+Directory and file management:
+- `test_init_output_dir` — creates expected directory tree with all subdirs
+- `test_init_output_dir_existing` — re-running on existing dir doesn't crash or delete files
+- `test_slug_from_path` — `"/path/to/Tell-Tale Heart.txt"` → `"tell_tale_heart"`
+- `test_write_script_json` — writes valid JSON, round-trips through json.load
+- `test_write_cast_json` — writes valid JSON with narrator + characters keys
+- `test_write_direction_json` — writes valid JSON with all pause/timing keys
+- `test_write_effects_json` — writes valid JSON with global + per_segment keys
+
+Voice demos:
+- `test_generate_voice_demos` — mock TTS, verify 2 files per character (pangram + story line)
+- `test_voice_demo_filenames` — verify slug-based naming: `the_old_man_pangram.mp3`
+- `test_voice_demo_story_line` — each character's story demo uses their first dialogue line
+
+Preview and chapters:
+- `test_generate_preview` — output file exists, duration ≈ PREVIEW_DURATION_MS (±500ms)
+- `test_generate_preview_short_story` — story shorter than preview duration → preview = full length
+- `test_split_chapters_short_story` — <50 segments → no chapter files created
+- `test_split_chapters_long_story` — >50 segments → multiple chapter MP3s in chapters/
+
+Resumability:
+- `test_check_step_fresh_no_output` — no output file → returns False (step needs to run)
+- `test_check_step_fresh_stale` — output exists but input is newer → returns False
+- `test_check_step_fresh_current` — output exists and input is older → returns True (skip)
+
+Commit: "Implement output artifacts, voice demos, preview, and resumability"
+
+---
+
 ### Layer 3: cli.py `[sonnet]`
 
 **File**: `audiobook_producer/cli.py`
 
 **Tests** (in `tests/test_cli.py` — green after implementation):
+
+Argument parsing:
+- `test_cli_default_args` — no args → uses bundled demo, output to `output/tell_tale_heart/`
+- `test_cli_custom_input` — positional arg sets input file
+- `test_cli_output_flag` — `-o` sets output directory path
+- `test_cli_no_music_flag` — `--no-music` sets flag
+- `test_cli_verbose_flag` — `-v` sets verbose
+- `test_cli_force_flag` — `--force` sets force re-run
+- `test_cli_list_voices` — `--list-voices` prints voices and exits
+
+Input validation:
 - `test_validate_missing_file` — SystemExit with clear message
 - `test_validate_empty_file` — SystemExit with clear message
 - `test_validate_no_segments` — SystemExit with clear message
 - `test_validate_ffmpeg_missing` — SystemExit when ffmpeg not found
-- `test_cli_default_args` — no args → uses bundled demo, default output path
-- `test_cli_custom_input` — positional arg sets input file
-- `test_cli_output_flag` — `-o` sets output path
-- `test_cli_no_music_flag` — `--no-music` sets flag
-- `test_cli_verbose_flag` — `-v` sets verbose
-- `test_cli_list_voices` — `--list-voices` prints voices and exits
 
-Commit: "Add CLI with argument parsing and input validation"
+Preview gate:
+- `test_preview_gate_verbose` — in `-v` mode, pipeline calls input() after voice demo step (mock input)
+- `test_preview_gate_nonverbose` — without `-v`, no input() call — proceeds silently
+
+Resumability integration:
+- `test_force_flag_deletes_output` — `--force` removes existing output dir before starting
+- `test_resume_skips_completed_steps` — when artifacts exist and are fresh, pipeline skips those steps (verify via call counts on mocked functions)
+
+Commit: "Add CLI with argument parsing, validation, preview gate, and resumability"
 
 ---
 
@@ -695,6 +998,8 @@ Commit: "Add CLI with argument parsing and input validation"
 - `test_full_pipeline_no_music` — same as above with --no-music
 - `test_full_pipeline_has_intro_outro` — verify intro title announcement and outro credits are present in segment list
 - `test_full_pipeline_bookend_structure` — verify output audio has music at start and end, silence in the middle section
+- `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/, final/
+- `test_full_pipeline_resume` — run pipeline twice; second run skips TTS (verify TTS mock call count = 0 on second run)
 
 Commit: "Wire up full pipeline and verify end-to-end integration"
 
