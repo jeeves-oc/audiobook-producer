@@ -23,7 +23,7 @@ audiobook-producer/
     parser.py                  # parse_story(), extract_metadata()
     voices.py                  # assign_voices(), voice pool, bookend scripts
     tts.py                     # generate_tts(), edge-tts integration, retry
-    music.py                   # generate_ambient_music(), numpy synthesis
+    music.py                   # generate_music(), source priority + numpy fallback
     effects.py                 # audio effects: reverb, normalization
     assembly.py                # assemble(), bookend music structure
     exporter.py                # export() MP3 + metadata tags
@@ -46,6 +46,9 @@ audiobook-producer/
     tell_tale_heart.cast.json  # Curated voice cast for Tell-Tale Heart
     the_open_window.txt        # Multi-voice demo story
     the_open_window.cast.json  # Curated voice cast for The Open Window
+    music/                     # Bundled CC0 classical pieces (gitignore exception)
+      tell_tale_heart.mp3      # Satie Gymnopédie No. 1 (minimalist, eerie)
+      the_open_window.mp3      # Debussy Clair de Lune (dreamy, ironic contrast)
   output/                      # gitignored — one subfolder per production
     tell_tale_heart/           # example production directory
       script.json              # parsed segments as JSON
@@ -64,7 +67,7 @@ audiobook-producer/
         042_story_narrator.mp3
         043_outro_narrator.mp3
       music/
-        ambient.mp3            # generated background music
+        background.mp3         # resolved music (bundled, user, or procedural)
       samples/
         preview_60s.mp3        # first ~60s of assembled audio
       chapters/                # chapter-level splits (longer stories)
@@ -86,7 +89,7 @@ audiobook-producer/
 | Text parsing | Regex (rule-based) | Zero dependencies, works well for classic literature |
 | Audio mixing | pydub + ffmpeg | Standard Python audio stack |
 | Audio effects | pedalboard (optional) | Spotify's lib for reverb on dialogue; graceful fallback |
-| Background music | Procedurally generated (numpy) | No licensing, no downloads, reproducible |
+| Background music | Bundled CC0 classical + user-provided + numpy fallback | Production-quality defaults, user-customizable, always works |
 | CLI | argparse (stdlib) | No extra dependency |
 | Output | MP3 (192kbps) | Good quality, universal compatibility |
 | Testing | pytest + unittest.mock | TDD with mocked I/O for edge-tts and ffmpeg |
@@ -105,9 +108,9 @@ DEPENDENCY GRAPH
        │                │                            │
        ▼                ▼                            ▼
   parser.py        voices.py       music.py    effects.py    tts.py
-  (text→segments)  (assign voices,  (numpy      (reverb,      (edge-tts
-                    bookend         synthesis)   normalize)    HTTP calls)
-                    scripts)
+  (text→segments)  (assign voices,  (source     (reverb,      (edge-tts
+                    bookend         priority +   normalize)    HTTP calls)
+                    scripts)        fallback)
        │                │               │            │           │
        └────────────────┴───────┬───────┴────────────┘           │
                                 │                                │
@@ -154,6 +157,7 @@ REVERB_WET_LEVEL = 0.15                      # pedalboard reverb: dry/wet mix
 PREVIEW_DURATION_MS = 60000                  # 60s preview sample
 VOICE_DEMO_PANGRAM = "The quick brown fox jumps over the lazy dog."
 OUTPUT_DIR = "output"
+BUNDLED_MUSIC_DIR = "demo/music"                 # bundled CC0 classical pieces
 VERSION = "0.1.0"                        # top-level output directory
 ```
 
@@ -192,8 +196,9 @@ VERSION = "0.1.0"                        # top-level output directory
   ┌───────────────────┼───────────────────┐
   │                   │                   │
   │  ┌────────────────▼───────────────┐   │
-  │  │ generate_ambient_music()       │   │
-  │  │ (numpy sine waves, A-minor)    │   │
+  │  │ generate_music()              │   │
+  │  │ (bundled CC0 → user file →   │   │
+  │  │  numpy sine wave fallback)   │   │
   │  └────────────────┬───────────────┘   │
   │                   │                   │
   │            ┌──────▼───────┐           │
@@ -345,10 +350,37 @@ OUTRO SCRIPT
 - **Progress output**: always print segment counter (`Generating segment 12/47...`). In verbose mode, include ETA (`~1 min remaining`). Non-verbose mode uses a compact single-line counter.
 - Small sleep between successful calls to avoid throttling
 
-### Step 4: Generate background music
-- Procedural ambient drone using numpy sine waves (A-minor, low-frequency)
-- MUSIC_LOOP_SECONDS loop with fade in/out
-- No bundled files, no downloads — fully procedural
+### Step 4: Resolve and prepare background music
+
+Music source is resolved with a priority chain. All paths end with a file at `output/<slug>/music/background.mp3`.
+
+```
+MUSIC SOURCE RESOLUTION
+═══════════════════════
+
+  music.py: generate_music(project_dir, music_file=None)
+       │
+       ├─ 1. Check output/<slug>/music/background.mp3 exists?
+       │     YES → load it (user already ran `set music-file` or previous run)
+       │     NO  ↓
+       │
+       ├─ 2. music_file argument provided?
+       │     YES → copy to output/<slug>/music/background.mp3, load it
+       │     NO  ↓
+       │
+       ├─ 3. Bundled music for this story? (demo stories only)
+       │     YES → copy from demo/music/<slug>.mp3 to output/<slug>/music/background.mp3
+       │     NO  ↓
+       │
+       └─ 4. Procedural fallback
+             Generate numpy sine wave ambient → save as output/<slug>/music/background.mp3
+```
+
+- **Bundled demo music**: `demo/music/tell_tale_heart.mp3` (Satie Gymnopédie No. 1) and `demo/music/the_open_window.mp3` (Debussy Clair de Lune). CC0 recordings from Musopen. Checked into the repo via a `.gitignore` exception for `demo/music/*.mp3`.
+- **User-provided music**: `set <slug> music-file <path>` copies the file into the project. See set subcommand below.
+- **Procedural fallback**: numpy sine wave ambient drone (A-minor, low-frequency), MUSIC_LOOP_SECONDS duration.
+- **Trim + fade**: If the source file is longer than MUSIC_LOOP_SECONDS, take the first N seconds and apply MUSIC_FADE_MS fade-out. Files shorter than the target are used as-is.
+- **Provenance tracking**: `direction.json` records `music_source` (e.g., `"bundled:tell_tale_heart.mp3"`, `"user:ambient.mp3"`, `"procedural"`).
 
 ### Step 4b: Apply audio effects
 - **`effects.py`** — per-segment audio processing after TTS generation
@@ -458,6 +490,7 @@ SET SUBCOMMAND OPTIONS
   set <slug> narrator-voice <voice_id>      Change narrator's narration voice
   set <slug> narrator-dialogue <voice_id>   Change narrator's dialogue voice
   set <slug> music on|off                   Enable/disable background music
+  set <slug> music-file <path>              Provide custom music file (copies into project)
   set <slug> music-db <float>               Change music bed volume (e.g., -25)
   set <slug> reverb on|off                  Enable/disable dialogue reverb
   set <slug> reverb-room <float>            Change reverb room size (0.0-1.0)
@@ -487,6 +520,7 @@ INVALIDATION MAP
   narrator-voice            │ voice_demos/, segments/, samples/, final/
   narrator-dialogue         │ voice_demos/, segments/, samples/, final/
   music on|off              │ music/, samples/, final/
+  music-file                │ samples/, final/ (music/ replaced directly)
   music-db                  │ samples/, final/
   reverb on|off             │ segments/ (effects applied in-place), samples/, final/
   reverb-room, reverb-wet   │ segments/ (effects applied in-place), samples/, final/
@@ -506,13 +540,14 @@ SET KEY → ARTIFACT MAPPING
   narrator-voice    │ cast.json        │ .narrator.voice                        │ string (voice ID)
   narrator-dialogue │ cast.json        │ .narrator.dialogue_voice               │ string (voice ID)
   music             │ direction.json   │ .no_music                              │ bool (on→false, off→true)
+  music-file        │ (file copy)      │ output/<slug>/music/background.mp3     │ path (source file to copy)
   music-db          │ direction.json   │ .music_bed_db                          │ float (negative dB)
   reverb            │ effects.json     │ .per_segment.dialogue.reverb           │ dict or null (on→defaults, off→null)
   reverb-room       │ effects.json     │ .per_segment.dialogue.reverb.room_size │ float (0.0-1.0)
   reverb-wet        │ effects.json     │ .per_segment.dialogue.reverb.wet_level │ float (0.0-1.0)
 ```
 
-Note: `set voice` requires `<speaker>` argument to identify which character. All other keys take a single value argument. The `set` subcommand validates the project exists before loading artifacts.
+Note: `set voice` requires `<speaker>` argument to identify which character. `set music-file` copies a file instead of updating JSON — it validates the source exists and is loadable by pydub, copies to `output/<slug>/music/background.mp3`, and updates `direction.json` with `music_source`. All other keys take a single value argument. The `set` subcommand validates the project exists before loading artifacts.
 
 ### output.json Manifest
 
@@ -535,6 +570,7 @@ Generated at export time (Step 6), saved alongside the final MP3 in `output/<slu
   },
   "settings": {
     "music": true,
+    "music_source": "bundled:tell_tale_heart.mp3",
     "music_bed_db": -25,
     "reverb": true,
     "reverb_room_size": 0.3,
@@ -587,9 +623,9 @@ OUTPUT DIRECTORY LIFECYCLE
        │       ├── ...
        │       └── 043_outro_narrator.mp3
        │
-       ├── 5. Music
+       ├── 5. Music (source priority: existing → user file → bundled → procedural)
        │   └── music/
-       │       └── ambient.mp3
+       │       └── background.mp3
        │
        ├── 6. Assembly + Preview
        │   └── samples/
@@ -652,9 +688,12 @@ OUTPUT DIRECTORY LIFECYCLE
     "speaker_change_ms": 500,
     "type_transition_ms": 700
   },
-  "no_music": false
+  "no_music": false,
+  "music_source": null
 }
 ```
+
+`music_source` is populated at run time by `generate_music()`. Possible values: `"bundled:<filename>"` (e.g., `"bundled:tell_tale_heart.mp3"`), `"user:<original_filename>"`, `"procedural"`, or `null` (not yet resolved). Written back to `direction.json` after music step completes.
 
 **effects.json** — effects applied per segment, written after Step 2:
 ```json
@@ -730,7 +769,7 @@ RESUMABILITY CHECKS
   ─────────────────────────────────────────
   Step 3 (Demos):     skip if voice_demos/ has expected file count AND cast.json mtime unchanged
   Step 4 (TTS):       skip if segments/ has expected file count matching script.json
-  Step 5 (Music):     skip if music/ambient.mp3 exists
+  Step 5 (Music):     skip if music/background.mp3 exists
   Step 6 (Assembly):  always re-run (fast, depends on all prior outputs)
   Step 7 (Export):    always re-run (fast, final output)
 ```
@@ -777,6 +816,7 @@ Detailed, multi-line commit messages: short imperative subject line, blank line,
 - **"I" = narrator**: First-person attributions map to the narrator speaker, preventing the narrator from being treated as a separate character in first-person stories.
 - **Narrator voice split**: Narrator narration uses `en-US-GuyNeural` (American), narrator spoken dialogue uses `en-GB-RyanNeural` (British). Audible contrast between inner monologue and spoken words.
 - **Bookend music**: Music plays only at the intro and outro — not during the story body. The intro features a title announcement and character introductions (each character says their name in their own voice). The outro has credits and "thank you for listening."
+- **Music source priority**: Bundled CC0 classical pieces for demo stories (Satie for Tell-Tale Heart, Debussy for Open Window), user-provided via `set music-file`, procedural numpy sine wave fallback. All sources are copied to `output/<slug>/music/background.mp3` — no external references survive into the slug folder.
 - **Metadata from file header**: Title is first non-empty line, author follows "by " pattern. Falls back gracefully.
 - **Effects are additive**: All audio processing in `effects.py` is optional and layered on top of raw TTS output. The pipeline works without any effects applied.
 - **Output directory per production**: Each story gets its own folder under `output/` with intermediate artifacts (script, cast, segments, music, etc.). Enables resumability, iteration on individual steps, and easy inspection.
@@ -927,7 +967,7 @@ When multiple agents run simultaneously on Layer 1:
 - `tests/test_parser.py` with failing `test_parse_narration_only`
 - `tests/test_voices.py` with failing `test_narrator_gets_narrator_voice`
 - `tests/test_tts.py` with failing `test_tts_generates_files`
-- `tests/test_music.py` with failing `test_music_returns_audio_segment`
+- `tests/test_music.py` with failing `test_procedural_music_returns_audio_segment`
 - `tests/test_effects.py` with failing `test_reverb_on_dialogue`
 - `tests/test_artifacts.py` with failing `test_init_output_dir`
 
@@ -1012,12 +1052,33 @@ Commit: "Implement TTS generation with exponential backoff retry"
 ### Layer 1d: music.py `[sonnet]`
 
 **File**: `audiobook_producer/music.py`
-**Tests** (in `tests/test_music.py` — green after implementation):
-- `test_music_returns_audio_segment` — returns a pydub AudioSegment
-- `test_music_correct_duration` — duration ≈ MUSIC_LOOP_SECONDS * 1000 ms (±100ms)
-- `test_music_not_silent` — RMS > 0 (actually produces sound)
 
-Commit: "Implement ambient music generation with numpy sine wave synthesis"
+**Functions**:
+- **`generate_music(project_dir, music_file=None)`**: Resolve music source and return AudioSegment. Priority: (1) existing `background.mp3` in project `music/` dir, (2) `music_file` argument → copy to project then load, (3) bundled demo music matching project slug, (4) procedural numpy fallback. All sources are trimmed/faded to MUSIC_LOOP_SECONDS and saved as `output/<slug>/music/background.mp3`. Returns `(AudioSegment, music_source_str)` tuple.
+- **`generate_procedural_music()`**: Original numpy sine wave ambient drone. A-minor, MUSIC_LOOP_SECONDS duration. Returns AudioSegment.
+- **`load_and_prepare_music(source_path, target_path)`**: Load MP3, trim to MUSIC_LOOP_SECONDS if longer, apply MUSIC_FADE_MS fade-out at the end, save to target_path. Returns AudioSegment.
+
+**Tests** (in `tests/test_music.py` — green after implementation):
+
+Procedural (existing, renamed):
+- `test_procedural_music_returns_audio_segment` — numpy fallback returns AudioSegment
+- `test_procedural_music_correct_duration` — duration ≈ MUSIC_LOOP_SECONDS * 1000 ms (±100ms)
+- `test_procedural_music_not_silent` — RMS > 0
+
+File-based music:
+- `test_load_and_prepare_copies_to_target` — source MP3 copied to target path
+- `test_load_and_prepare_trims_long_file` — 5-min MP3 trimmed to MUSIC_LOOP_SECONDS
+- `test_load_and_prepare_fade_out` — last MUSIC_FADE_MS of output fades to near-silence
+- `test_load_and_prepare_short_file_no_trim` — file shorter than MUSIC_LOOP_SECONDS used as-is
+
+Source resolution:
+- `test_generate_music_existing_background` — background.mp3 already exists → load it, don't overwrite
+- `test_generate_music_user_file` — music_file arg → copies to music/, returns AudioSegment
+- `test_generate_music_bundled_demo` — project slug matches demo → uses bundled music
+- `test_generate_music_procedural_fallback` — no file, no bundled → numpy sine wave
+- `test_generate_music_saves_to_project` — all paths save background.mp3 in project music/ dir
+
+Commit: "Implement music with bundled CC0, user-provided, and procedural fallback"
 
 ---
 
@@ -1151,6 +1212,9 @@ Subcommand routing:
 - `test_cli_set_voice` — `set tell_tale_heart voice "the old man" en-US-TonyNeural` updates cast.json
 - `test_cli_set_voice_invalidates` — after set voice, voice_demos/ and segments/ are deleted
 - `test_cli_set_music_off` — `set tell_tale_heart music off` updates direction.json
+- `test_cli_set_music_file` — `set tell_tale_heart music-file path/to/track.mp3` copies file to music/background.mp3
+- `test_cli_set_music_file_missing` — `set tell_tale_heart music-file nonexistent.mp3` → SystemExit
+- `test_cli_set_music_file_invalidates` — after set music-file, samples/ and final/ deleted
 - `test_cli_set_reverb_room` — `set tell_tale_heart reverb-room 0.5` updates effects.json
 - `test_cli_set_nonexistent_project` — `set nonexistent voice "x" en-US-TonyNeural` → SystemExit with clear message
 - `test_cli_set_invalid_key` — `set tell_tale_heart badkey val` → SystemExit
@@ -1186,18 +1250,18 @@ Commit: "Add CLI with subcommand routing, validation, preview gate, and resumabi
 
 Tell-Tale Heart (first-person narrator, 3 cast members):
 - `test_parse_tell_tale_heart` — parse `demo/tell_tale_heart.txt`, verify segments > 0 and no empty text fields
-- `test_pipeline_tell_tale_heart` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid
+- `test_pipeline_tell_tale_heart` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid. Verify uses bundled Satie (music_source = "bundled:tell_tale_heart.mp3"), not procedural.
 - `test_pipeline_tell_tale_heart_intro_outro` — verify intro has title/author/cast, outro has credits + "thank you"
 
 The Open Window (third-person, 6 cast members with aliases):
 - `test_parse_open_window` — parse `demo/the_open_window.txt`, verify segments > 0 and multiple speakers found
-- `test_pipeline_open_window` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid
+- `test_pipeline_open_window` — mock edge_tts, run full pipeline, verify output MP3 exists and is valid. Verify uses bundled Debussy (music_source = "bundled:the_open_window.mp3"), not procedural.
 - `test_pipeline_open_window_aliases` — verify "the child" and "the niece" map to the same voice (alias resolution)
 
 Cross-cutting:
 - `test_full_pipeline_no_music` — run with `set music off` then `run`, verify no music in output
 - `test_full_pipeline_bookend_structure` — verify output audio has music at start and end, silence in the middle
-- `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/, final/, output.json
+- `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/background.mp3, final/, output.json. Verify `output.json` includes `music_source` in settings.
 - `test_full_pipeline_resume` — run pipeline twice; second run skips TTS (verify TTS mock call count = 0 on second run)
 
 Commit: "Wire up full pipeline and verify end-to-end integration"

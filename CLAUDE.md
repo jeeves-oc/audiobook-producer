@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Audiobook Producer is a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, sound effects, and procedurally generated background music. Uses only free tools (no API keys required). See PLAN.md for the full implementation roadmap.
+Audiobook Producer is a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, sound effects, and background music (bundled CC0 classical, user-provided, or procedural fallback). Uses only free tools (no API keys required). See PLAN.md for the full implementation roadmap.
 
 ## Commands
 
@@ -27,6 +27,10 @@ python producer.py status tell_tale_heart
 
 # Change a voice and re-run
 python producer.py set tell_tale_heart voice "the old man" en-GB-RyanNeural
+python producer.py run tell_tale_heart
+
+# Use custom background music
+python producer.py set tell_tale_heart music-file ~/music/ambient.mp3
 python producer.py run tell_tale_heart
 
 # List projects and voices
@@ -63,7 +67,7 @@ audiobook_producer/
   parser.py       # parse_story(), extract_metadata()
   voices.py       # assign_voices(), bookend scripts (intro/outro)
   tts.py          # generate_tts(), edge-tts, retry logic
-  music.py        # generate_ambient_music(), numpy synthesis
+  music.py        # generate_music(), source priority + numpy fallback
   effects.py      # reverb (pedalboard), normalization
   assembly.py     # assemble(), bookend music structure
   exporter.py     # export() MP3 + metadata
@@ -76,7 +80,7 @@ The pipeline:
 1. **Parse** — Regex-based text segmentation + metadata extraction (title, author). First-person "I" attributions map to narrator.
 2. **Assign voices + bookends** — sha256-based deterministic voice mapping. Narrator narration → American, narrator dialogue → British. Generate intro/outro segment scripts.
 3. **Generate TTS** — Sequential `edge_tts.Communicate()` calls with exponential backoff retry (3 attempts). Processes all segments: intro + story + outro.
-4. **Generate music** — Procedural ambient drone via numpy sine waves (A-minor).
+4. **Generate music** — Source priority: bundled CC0 classical (demo stories) → user-provided (`set music-file`) → procedural numpy sine wave fallback. All copied to `output/<slug>/music/background.mp3`.
 4b. **Apply effects** — Reverb on dialogue (pedalboard, optional), volume normalization.
 5. **Assemble** — Bookend structure: music intro → narrator intro over music bed → story with type-aware pauses (no music) → narrator outro over music bed → music fade out.
 6. **Export** — MP3 at 192kbps with metadata tags to `output/<slug>/final/`.
@@ -101,5 +105,7 @@ Each module has its own test file in `tests/`. Shared fixtures in `tests/conftes
 - **Resumability**: pipeline checks mtime on artifacts and skips fresh steps. `--force` to re-run everything.
 - **Voice assignment is deterministic**: sha256-based, stable across runs and text edits
 - **Input validation**: fail fast — check file exists, non-empty, segments produced, ffmpeg installed
+- **Music source priority**: existing background.mp3 → user-provided file → bundled demo music → procedural numpy fallback. All music lives at `output/<slug>/music/background.mp3`.
+- **Bundled demo music**: `demo/music/tell_tale_heart.mp3` (Satie) and `demo/music/the_open_window.mp3` (Debussy), CC0 from Musopen. Gitignore exception for `demo/music/*.mp3`.
 - **Demo stories**: bundled at `demo/tell_tale_heart.txt` (Poe) and `demo/the_open_window.txt` (Saki), both public domain
 - **Commit convention**: detailed multi-line messages — short imperative subject, body explaining what and why
