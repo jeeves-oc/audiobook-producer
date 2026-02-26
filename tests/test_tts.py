@@ -92,12 +92,13 @@ def test_tts_retry_exhausted(mock_comm, tmp_path):
 @patch("audiobook_producer.tts.edge_tts.Communicate")
 def test_tts_validates_output_size(mock_comm, tmp_path):
     """0-byte output treated as failure."""
+    call_count_outer = [0]
+
     def write_empty(text, voice):
         mock = MagicMock()
-        call_count_inner = [0]
         async def save(path):
-            call_count_inner[0] += 1
-            if call_count_inner[0] <= 2:
+            call_count_outer[0] += 1
+            if call_count_outer[0] <= 2:
                 open(path, "w").close()  # 0-byte file
             else:
                 AudioSegment.silent(duration=100).export(path, format="mp3")
