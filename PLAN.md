@@ -4,9 +4,9 @@
 
 Build a Python CLI app that transforms public domain text into full-cast audio dramas with distinct character voices, narration, and background music. The user has no API keys, so we use free tools only. MVP targets a single short story ("The Tell-Tale Heart" by Poe) as a bundled demo. New public GitHub repo.
 
-**Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest test_producer.py -v` to see what's red.
+**Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest tests/ -v` to see what's red.
 
-**Done condition**: `pytest test_producer.py -v` is all green AND `python producer.py -v` produces a playable MP3 file of "The Tell-Tale Heart" with distinct character voices and background music.
+**Done condition**: `pytest tests/ -v` is all green AND `python producer.py -v` produces a playable MP3 file of "The Tell-Tale Heart" with distinct character voices, bookend intro/outro, and background music.
 
 ## Project Structure
 
@@ -55,7 +55,6 @@ audiobook-producer/
 | Text parsing | Regex (rule-based) | Zero dependencies, works well for classic literature |
 | Audio mixing | pydub + ffmpeg | Standard Python audio stack |
 | Audio effects | pedalboard (optional) | Spotify's lib for reverb on dialogue; graceful fallback |
-| Procedural SFX | numpy | Same stack as music — heartbeat, room tone, ambience |
 | Background music | Procedurally generated (numpy) | No licensing, no downloads, reproducible |
 | CLI | argparse (stdlib) | No extra dependency |
 | Output | MP3 (192kbps) | Good quality, universal compatibility |
@@ -97,7 +96,7 @@ DEPENDENCY GRAPH
 
 ## Constants
 
-All magic numbers defined as module-level constants at the top of `producer.py`:
+All magic numbers defined as module-level constants in `audiobook_producer/constants.py`:
 
 ```python
 SEGMENT_SPLIT_THRESHOLD = 500       # chars — split segments longer than this
@@ -116,7 +115,6 @@ NARRATOR_VOICE = "en-US-GuyNeural"           # narrator internal monologue / nar
 NARRATOR_DIALOGUE_VOICE = "en-GB-RyanNeural" # narrator spoken dialogue (British accent)
 REVERB_ROOM_SIZE = 0.3                       # pedalboard reverb: 0.0-1.0 (subtle)
 REVERB_WET_LEVEL = 0.15                      # pedalboard reverb: dry/wet mix
-ROOM_TONE_DB = -40                           # background room tone level
 ```
 
 ## Pipeline (6 Steps)
@@ -136,7 +134,7 @@ ROOM_TONE_DB = -40                           # background room tone level
                (title, author) + list[Segment]
                       │
                ┌──────▼────────┐
-               │assign_voices()│  hash(speaker) → voice pool index
+               │assign_voices()│  cast file → hash fallback
                │               │  narrator split: narration vs dialogue
                │gen_bookends() │  Intro: "This is <title>..."
                │               │  Outro: "This has been..."
@@ -195,12 +193,14 @@ Music plays only at the beginning and end — not during the story body. This cr
 - **`parse_story(text)`**: Split into segments after stripping the metadata header (title + author lines)
 - Split on paragraphs (`\n\n`)
 - Extract dialogue via regex on `"..."` double quotes
-- Identify speakers from attribution patterns ("said John", "I shrieked")
+- Identify speakers from attribution patterns — both post-attribution and pre-attribution:
+  - **Post-attribution**: `"Hello," said John.` — speaker after the quote
+  - **Pre-attribution**: `John said, "Hello."` or `the old man sprang up, crying out -- "Who's there?"` — speaker before the quote
 - First-person attributions ("I said", "I shrieked") map to the narrator — not a separate character. This is critical for first-person stories like "The Tell-Tale Heart" where the narrator IS the main character.
 - Split long segments (>SEGMENT_SPLIT_THRESHOLD chars) at sentence boundaries
 - Skip empty/whitespace-only paragraphs
 - Output: `list[Segment]` with type (narration/dialogue), text, speaker
-- Known limitations: nested quotes, single-quote dialogue, dialogue split across paragraphs, and attribution-less dialogue are not handled. These are acceptable for the MVP demo.
+- Known limitations: nested quotes, single-quote dialogue, dialogue split across paragraphs, and attribution-less dialogue (quotes with no nearby "said/cried/asked" verb) are not handled. These are acceptable for the MVP demo.
 
 ### Step 2: Assign voices + generate bookend scripts
 
@@ -257,7 +257,7 @@ Fields:
 - **`cast`**: Map of parser-extracted speaker name → voice + description.
 - **`aliases`** (optional): List of alternate names the parser might extract for the same character. `assign_voices()` resolves aliases to the primary name before assignment. This handles classic literature where one character is called "the niece", "the child", "Vera", etc.
 
-- **`load_cast(story_path)`**: Look for `<basename>.cast.json` next to the `.txt` file (e.g., `demo/tell_tale_heart.cast.json`). Returns cast dict or empty dict if not found.
+- **`load_cast(story_path)`**: Look for `<basename>.cast.json` next to the `.txt` file (e.g., `demo/tell_tale_heart.cast.json`). Returns cast dict or empty dict if not found. **Error handling**: catches `json.JSONDecodeError` on malformed files — logs a warning and falls back to empty dict instead of crashing.
 - Stories without a cast file still work — all characters get hash-based pool voices and names-only intros.
 
 #### Bookend script generation
@@ -311,19 +311,15 @@ OUTRO SCRIPT
 - No bundled files, no downloads — fully procedural
 
 ### Step 4b: Apply audio effects
-- **`effects.py`** — processes individual segment audio files after TTS generation
+- **`effects.py`** — per-segment audio processing after TTS generation
 - **Reverb on dialogue**: subtle room reverb via pedalboard on dialogue segments. Gives dialogue spatial depth vs flat narration. Pedalboard is optional — graceful fallback to unprocessed audio if not installed.
-- **Procedural SFX**: generate sound effects via numpy (same approach as music):
-  - **Heartbeat**: low-frequency double-pulse sine wave with envelope (for dramatic tension — e.g., Tell-Tale Heart)
-  - **Room tone**: low-level filtered white noise (subtle background presence)
-  - **Outdoor ambience**: shaped white noise with slow modulation (for outdoor scenes)
-- **Effect mapping**: effects are applied based on segment type — all dialogue gets reverb, ambient backgrounds are scene-level. No NLP or story-specific annotation needed for MVP.
+- **Volume normalization**: normalize levels across all segments so quiet and loud speakers are balanced.
 - **Processing pipeline per segment**:
   1. Load TTS MP3
   2. Apply reverb if dialogue (pedalboard, optional)
   3. Normalize volume levels across segments
   4. Save processed audio back
-- SFX (heartbeat, room tone, outdoor) are returned as separate AudioSegments for assembly to overlay at appropriate points
+- Procedural SFX (heartbeat, room tone, ambience) deferred to Future Work — requires a scene annotation system that doesn't exist yet. See Future Work section.
 
 ### Step 5: Assemble (bookend music)
 - **Intro bookend**:
@@ -561,6 +557,7 @@ Commit: "Add package skeleton with constants, models, and Layer 1 test stubs"
 - `test_parse_no_attribution` — `"Hello."` with no attribution → speaker="unknown"
 - `test_parse_long_segment_split` — >500 char segment → split at sentence boundary
 - `test_parse_empty_paragraphs_skipped` — whitespace-only paragraphs produce no segments
+- `test_parse_pre_attribution` — `the old man cried out, "Who's there?"` → dialogue Segment with speaker="the old man"
 
 All tests use inline string inputs only. `test_parse_full_story` lives in Layer 4 (integration).
 
@@ -581,6 +578,8 @@ Voice assignment:
 - `test_cast_alias_resolves` — "the child" resolves to "the niece" entry and gets the same voice
 - `test_load_cast_file` — loads `.cast.json` sidecar, returns dict with voice + description + aliases
 - `test_load_cast_missing_file` — no cast file → returns empty dict (no crash)
+- `test_load_cast_malformed_json` — invalid JSON → logs warning, returns empty dict (no crash)
+- `test_cast_narrator_override` — cast file `"narrator"` key overrides NARRATOR_VOICE constant and provides description for intro
 - `test_voice_determinism` — same speaker list → same assignments on repeated calls (sha256 is stable)
 - `test_voice_stability` — adding a speaker doesn't change existing speakers' voices
 - `test_many_speakers_wrap` — 20 speakers don't crash (hash wraps around pool)
@@ -591,6 +590,7 @@ Bookend scripts:
 - `test_intro_excludes_unknown_speakers` — speakers named "unknown" are not introduced
 - `test_intro_character_speaks_own_name` — each character's name segment uses that character's voice
 - `test_intro_includes_cast_descriptions` — when cast has descriptions, intro narration includes them
+- `test_intro_without_cast_file` — no cast file → intro uses speaker names only, no descriptions
 
 Commit: "Implement voice assignment with cast system and bookend scripts"
 
@@ -630,12 +630,11 @@ Commit: "Implement ambient music generation with numpy sine wave synthesis"
 **Tests** (in `tests/test_effects.py` — green after implementation):
 - `test_reverb_on_dialogue` — dialogue AudioSegment processed through reverb has different waveform than input (pedalboard installed)
 - `test_reverb_fallback_no_pedalboard` — when pedalboard not installed, returns audio unchanged (no crash)
+- `test_reverb_skips_narration` — narration segments are not reverbed (only dialogue gets reverb)
 - `test_normalize_levels` — multiple segments at different volumes → output volumes are within 3dB of each other
-- `test_generate_heartbeat` — returns AudioSegment with rhythmic amplitude pattern (peaks at ~1Hz intervals)
-- `test_generate_room_tone` — returns AudioSegment with RMS > 0 and RMS < -30dB (subtle)
 - `test_process_segments_passthrough` — when no effects enabled, output matches input
 
-Commit: "Implement audio effects with reverb, normalization, and procedural SFX"
+Commit: "Implement audio effects with reverb and volume normalization"
 
 ---
 
@@ -720,7 +719,18 @@ The Open Window by Saki is already staged at `demo/the_open_window.txt`. Add it 
 ### Async/concurrent TTS generation
 Sequential TTS takes ~1-2 minutes for a short story. Replace the sequential loop in `tts.py` with `asyncio.gather()` + `Semaphore(5)` to limit concurrency while still respecting rate limits. This is the single biggest performance win available.
 
+### Procedural SFX + scene annotation
+The effects.py module currently handles per-segment processing (reverb, normalization). Adding procedural SFX (heartbeat, room tone, outdoor ambience) requires a scene annotation system to specify *when* effects play — the current architecture has no mechanism for this. Options:
+- **Cast file extension**: add an `"effects"` key to `.cast.json` mapping scene ranges to SFX
+- **Inline text markers**: `[SFX: heartbeat]` annotations in the story text
+- **Automatic detection**: NLP-based scene classification (most complex, least reliable)
+
+Candidate SFX (all procedurally generated via numpy, no downloads):
+- Heartbeat: low-frequency double-pulse sine wave with envelope
+- Room tone: filtered white noise at -40dB
+- Outdoor ambience: shaped white noise with slow modulation
+- Clock ticking: periodic short clicks
+
 ### Advanced sound effects
-- Story-specific effect annotations (e.g., heartbeat for Tell-Tale Heart confession scene)
 - Environmental audio that adapts to scene content (indoor/outdoor detection)
 - Foley effects library (footsteps, doors, weather)
