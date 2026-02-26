@@ -66,6 +66,8 @@ MUSIC_LOOP_SECONDS = 30             # duration of generated ambient loop
 OUTPUT_BITRATE = "192k"             # MP3 output bitrate
 TTS_RETRY_COUNT = 3                 # max retries per TTS segment
 TTS_RETRY_BASE_DELAY = 1.0         # seconds — base delay for exponential backoff
+NARRATOR_VOICE = "en-US-GuyNeural"           # narrator internal monologue / narration
+NARRATOR_DIALOGUE_VOICE = "en-GB-RyanNeural" # narrator spoken dialogue (British accent)
 ```
 
 ## Pipeline (6 Steps)
@@ -131,10 +133,28 @@ TTS_RETRY_BASE_DELAY = 1.0         # seconds — base delay for exponential back
 - Known limitations: nested quotes, single-quote dialogue, dialogue split across paragraphs, and attribution-less dialogue are not handled. These are acceptable for the MVP demo.
 
 ### Step 2: Assign voices
-- Narrator gets `en-US-GuyNeural` (deep, authoritative)
+- **Narrator narration** gets `en-US-GuyNeural` (American, deep, authoritative) — internal monologue and descriptive prose
+- **Narrator spoken dialogue** gets `en-GB-RyanNeural` (British accent) — when the narrator character speaks aloud (dialogue segments where speaker="narrator"). This creates an audible distinction between the narrator's inner thoughts and their spoken words, adding dramatic range to first-person stories like "The Tell-Tale Heart".
 - 13 character voices pooled from EN-US/EN-GB male/female neural voices
 - Deterministic via hash: `hash(speaker_name) % len(voices)` — stable across text edits (adding/removing a character doesn't reshuffle other assignments)
 - Voice is assigned directly onto `Segment.voice` field (no separate dict)
+
+```
+Voice assignment logic:
+┌─────────────────────────┐
+│ segment.speaker ==      │
+│ "narrator"?             │
+│                         │
+│  YES ──┐     NO ──────────▶ hash(speaker) % len(pool)
+│        │                │
+│        ▼                │
+│  segment.type ==        │
+│  "dialogue"?            │
+│                         │
+│  YES: en-GB-RyanNeural  │
+│  NO:  en-US-GuyNeural   │
+└─────────────────────────┘
+```
 
 ### Step 3: Generate TTS audio (sequential, via edge-tts)
 - `generate_tts()` is a **sync function** that calls `asyncio.run()` internally for each segment (edge-tts is async-only). This keeps the rest of the pipeline synchronous.
@@ -215,7 +235,8 @@ Detailed, multi-line commit messages: short imperative subject line, blank line,
 - **Sequential TTS**: Simple and sufficient for short stories. Wall-clock time for "The Tell-Tale Heart" (~40-60 segments) is ~1-2 minutes.
 - **Temp files cleaned up**: `tempfile.mkdtemp()` with `finally: shutil.rmtree()`.
 - **Hash-based voice assignment**: `hash(name) % len(voices)` is stable across text edits — only the new/removed character's voice changes, others stay the same.
-- **"I" = narrator**: First-person attributions map to the narrator voice, preventing the narrator from being assigned two different voices in first-person stories.
+- **"I" = narrator**: First-person attributions map to the narrator speaker, preventing the narrator from being treated as a separate character in first-person stories.
+- **Narrator voice split**: Narrator narration uses `en-US-GuyNeural` (American), narrator spoken dialogue uses `en-GB-RyanNeural` (British). This gives first-person stories like "The Tell-Tale Heart" audible contrast between inner monologue and spoken words — a simple `if type == "dialogue" and speaker == "narrator"` branch in `assign_voices()`.
 
 ## Testing Strategy — TDD with Mocks
 
@@ -310,14 +331,15 @@ Note: `test_parse_full_story` (which uses the demo file) lives in Phase 8, not h
 ### Phase 3: assign_voices()
 
 **Tests for this phase** (green after implementation):
-- `test_narrator_gets_narrator_voice` — narrator segments get `en-US-GuyNeural`
+- `test_narrator_gets_narrator_voice` — narrator narration segments get `en-US-GuyNeural`
+- `test_narrator_dialogue_gets_distinct_voice` — narrator dialogue segments get `en-GB-RyanNeural` (British), not the narration voice
 - `test_character_gets_voice` — non-narrator speaker gets a voice from the pool
 - `test_voice_determinism` — same speaker list → same assignments on repeated calls
 - `test_voice_stability` — adding a speaker doesn't change existing speakers' voices
 - `test_many_speakers_wrap` — 20 speakers don't crash (hash wraps around pool)
 
 **Implementation:**
-- Implement `assign_voices()` with hash-based voice mapping
+- Implement `assign_voices()` with hash-based voice mapping and narrator dialogue distinction
 - Also write Phase 4 tests (will be red)
 - Commit: "Implement assign_voices() with hash-based deterministic assignment"
 
