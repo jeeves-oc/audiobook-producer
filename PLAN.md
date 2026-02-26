@@ -262,7 +262,7 @@ Each phase:
   2. Run pytest — see what's red (or no tests yet)
   3. Write failing tests for this phase
   4. Implement until green
-  5. Commit with detailed message
+  5. Commit with detailed message and push
   6. Next agent picks up from git
 ```
 
@@ -274,7 +274,7 @@ Each phase:
 4. If all tests pass, check the phase list below for the next uncommitted phase
 5. Implement the current phase (tests first if tests don't exist for it yet)
 6. Run `pytest test_producer.py -v` to verify green
-7. Commit and stop — next session picks up
+7. Commit and `git push` — next session picks up from remote
 
 ### Phase 1: Skeleton + constants + dataclass
 

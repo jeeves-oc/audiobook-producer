@@ -33,7 +33,7 @@ This project is built test-first in atomic phases. Each phase writes failing tes
 1. Run `pytest test_producer.py -v 2>&1 | tail -40` to see current state
 2. First failing test = current phase's work
 3. All green = check PLAN.md for next uncommitted phase
-4. Implement current phase, verify green, commit with detailed message, stop
+4. Implement current phase, verify green, commit with detailed message, `git push`, stop
 
 See PLAN.md "TDD Phases — Ralph Loop Iteration Guide" for the full phase list and test inventory.
 
