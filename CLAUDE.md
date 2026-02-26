@@ -16,14 +16,22 @@ pip install -r requirements.txt
 # Run tests (TDD anchor — always run this first)
 pytest tests/ -v
 
-# Run with bundled demo story
-python producer.py -v
+# Create a new project from a text file
+python producer.py new demo/tell_tale_heart.txt
 
-# Run with custom input (output to output/<slug>/)
-python producer.py story.txt -o mydir/
+# Run the pipeline
+python producer.py run tell_tale_heart -v
 
-# List available TTS voices
-python producer.py --list-voices
+# Check project state
+python producer.py status tell_tale_heart
+
+# Change a voice and re-run
+python producer.py set tell_tale_heart voice "the old man" en-GB-RyanNeural
+python producer.py run tell_tale_heart
+
+# List projects and voices
+python producer.py list
+python producer.py voices --filter en-US
 ```
 
 ## Development Method — Parallel TDD via Ralph Loop
@@ -41,8 +49,8 @@ This project is built test-first with **parallel module development**. Modules a
 See PLAN.md "TDD Phases — Parallel Ralph Loop Iteration Guide" for the full layer structure and test inventory.
 
 **Done condition**: all tests green AND both demos produce playable MP3s:
-1. `python producer.py demo/tell_tale_heart.txt -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
-2. `python producer.py demo/the_open_window.txt -v` → `output/the_open_window/final/the_open_window.mp3`
+1. `python producer.py new demo/tell_tale_heart.txt && python producer.py run tell_tale_heart -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
+2. `python producer.py new demo/the_open_window.txt && python producer.py run the_open_window -v` → `output/the_open_window/final/the_open_window.mp3`
 
 ## Architecture
 

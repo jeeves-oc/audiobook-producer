@@ -7,8 +7,8 @@ Build a Python CLI app that transforms public domain text into full-cast audio d
 **Development method**: Test-driven development (TDD), structured for autonomous iteration via the Ralph Loop. Each phase writes failing tests first, then implements until green, then commits. A fresh agent session can pick up from git state alone by running `pytest tests/ -v` to see what's red.
 
 **Done condition**: `pytest tests/ -v` is all green AND both demo stories produce playable MP3s:
-1. `python producer.py demo/tell_tale_heart.txt -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
-2. `python producer.py demo/the_open_window.txt -v` → `output/the_open_window/final/the_open_window.mp3`
+1. `python producer.py new demo/tell_tale_heart.txt && python producer.py run tell_tale_heart -v` → `output/tell_tale_heart/final/tell_tale_heart.mp3`
+2. `python producer.py new demo/the_open_window.txt && python producer.py run the_open_window -v` → `output/the_open_window/final/the_open_window.mp3`
 
 Each output must have distinct character voices, bookend intro/outro with cast introductions, background music, and all intermediate artifacts (script.json, cast.json, direction.json, effects.json, voice_demos/, segments/).
 
@@ -153,7 +153,8 @@ REVERB_ROOM_SIZE = 0.3                       # pedalboard reverb: 0.0-1.0 (subtl
 REVERB_WET_LEVEL = 0.15                      # pedalboard reverb: dry/wet mix
 PREVIEW_DURATION_MS = 60000                  # 60s preview sample
 VOICE_DEMO_PANGRAM = "The quick brown fox jumps over the lazy dog."
-OUTPUT_DIR = "output"                        # top-level output directory
+OUTPUT_DIR = "output"
+VERSION = "0.1.0"                        # top-level output directory
 ```
 
 ## Pipeline (6 Steps)
@@ -403,20 +404,130 @@ Validate early, fail fast with clear error messages:
 
 ## CLI Interface
 
+Project-centric subcommand workflow. The project slug (derived from the input filename) is the key for all operations.
+
 ```
-python producer.py                              # Run with bundled demo
-python producer.py story.txt                    # Custom input (output to output/<slug>/)
-python producer.py story.txt -o mydir/          # Custom output directory
-python producer.py --list-voices                # Show available voices
-python producer.py story.txt --no-music         # Skip background music
-python producer.py story.txt -v                 # Verbose: progress + voice demo preview gate
-python producer.py story.txt --force            # Force re-run, ignore existing artifacts
+SUBCOMMAND WORKFLOW
+═══════════════════
+
+  producer.py new <file>              Parse + assign voices + write configs
+  producer.py run <slug> [-v]         Run pipeline (TTS → effects → music → assembly → export)
+  producer.py status <slug>           Read-only view of project state
+  producer.py set <slug> <key> ...    Fine-tune one element, invalidate downstream
+  producer.py list                    List all projects under output/
+  producer.py voices [--filter STR]   List available edge-tts voices
+
+TYPICAL SESSION
+═══════════════
+
+  $ python producer.py new demo/tell_tale_heart.txt
+  Created project: tell_tale_heart
+  Parsed 42 segments, assigned 3 voices
+  Cast written to output/tell_tale_heart/cast.json
+  Run 'producer.py status tell_tale_heart' to review, or 'producer.py run tell_tale_heart' to generate audio.
+
+  $ python producer.py status tell_tale_heart
+  Project: tell_tale_heart
+  Source:  demo/tell_tale_heart.txt
+  Segments: 42 (38 narration, 4 dialogue)
+  Cast:
+    narrator        → en-US-GuyNeural (American)
+    the old man     → en-US-TonyNeural
+    officers        → en-US-DavisNeural
+  Steps:
+    [done] parse         script.json (42 segments)
+    [done] voices        cast.json (3 voices assigned)
+    [----] tts           0/42 segments generated
+    [----] effects       not started
+    [----] music         not started
+    [----] assembly      not started
+    [----] export        not started
+
+  $ python producer.py set tell_tale_heart voice "the old man" en-GB-RyanNeural
+  Updated: the old man → en-GB-RyanNeural
+  Invalidated: voice_demos/, segments/ (will regenerate on next run)
+
+  $ python producer.py run tell_tale_heart -v
+  [voice demos, preview gate, TTS, effects, music, assembly, export]
+  Done: output/tell_tale_heart/final/tell_tale_heart.mp3
+
+SET SUBCOMMAND OPTIONS
+══════════════════════
+
+  set <slug> voice <speaker> <voice_id>     Change one character's voice
+  set <slug> narrator-voice <voice_id>      Change narrator's narration voice
+  set <slug> narrator-dialogue <voice_id>   Change narrator's dialogue voice
+  set <slug> music on|off                   Enable/disable background music
+  set <slug> music-db <float>               Change music bed volume (e.g., -25)
+  set <slug> reverb on|off                  Enable/disable dialogue reverb
+  set <slug> reverb-room <float>            Change reverb room size (0.0-1.0)
+  set <slug> reverb-wet <float>             Change reverb wet level (0.0-1.0)
 ```
 
 - Default output location: `output/<story_slug>/final/<story_slug>.mp3`
-- `-o` accepts a directory path (not a file); final MP3 goes into `<dir>/final/`
-- `-v` enables: detailed progress, ETA, voice demo preview gate with prompt
-- `--force` deletes existing output directory and starts fresh (skips resumability)
+- No args → prints help (not run demo)
+- `new` validates input, parses, assigns voices, writes configs — no audio generation
+- `run` picks up from where `new` left off (voice demos → TTS → effects → music → assembly → export)
+- `run -v` enables: detailed progress, ETA, voice demo preview gate with prompt
+- `run --force` deletes generated artifacts (preserves configs) and re-runs audio generation
+- `set` updates config and deletes stale downstream artifacts; next `run` regenerates them
+- `status` is purely read-only — shows project state without modifying anything
+
+### Invalidation Cascade
+
+When `set` changes a config value, downstream artifacts become stale and must be deleted so the next `run` regenerates them.
+
+```
+INVALIDATION MAP
+════════════════
+
+  What changed              │ What gets deleted
+  ──────────────────────────┼───────────────────────────────────
+  voice (any speaker)       │ voice_demos/, segments/, samples/, final/
+  narrator-voice            │ voice_demos/, segments/, samples/, final/
+  narrator-dialogue         │ voice_demos/, segments/, samples/, final/
+  music on|off              │ music/, samples/, final/
+  music-db                  │ samples/, final/
+  reverb on|off             │ segments/ (effects applied in-place), samples/, final/
+  reverb-room, reverb-wet   │ segments/ (effects applied in-place), samples/, final/
+```
+
+Implementation: a dict mapping setting keys to lists of subdirectories to delete. Simple `shutil.rmtree()` for each with `os.path.exists()` guard.
+
+### output.json Manifest
+
+Generated at export time (Step 6), saved alongside the final MP3 in `output/<slug>/final/output.json`. Read-only provenance — not consumed by the pipeline.
+
+```json
+{
+  "project": "tell_tale_heart",
+  "source": "demo/tell_tale_heart.txt",
+  "generated_at": "2026-02-26T14:30:00Z",
+  "producer_version": "0.1.0",
+  "metadata": {
+    "title": "The Tell-Tale Heart",
+    "author": "Edgar Allan Poe"
+  },
+  "cast": {
+    "narrator": {"voice": "en-US-GuyNeural", "dialogue_voice": "en-GB-RyanNeural"},
+    "the old man": {"voice": "en-US-TonyNeural"},
+    "officers": {"voice": "en-US-DavisNeural"}
+  },
+  "settings": {
+    "music": true,
+    "music_bed_db": -25,
+    "reverb": true,
+    "reverb_room_size": 0.3,
+    "reverb_wet_level": 0.15,
+    "bitrate": "192k"
+  },
+  "stats": {
+    "segments": 42,
+    "duration_seconds": 312,
+    "characters": 3
+  }
+}
+```
 
 ## Output Directory Structure
 
@@ -426,10 +537,11 @@ Each production creates a project folder under `output/` containing intermediate
 OUTPUT DIRECTORY LIFECYCLE
 ══════════════════════════
 
-  python producer.py story.txt -v
+  producer.py new story.txt    ──► parse + assign + write configs
+  producer.py run story -v    ──► TTS + effects + music + assembly + export
        │
        ▼
-  output/story/               ◄── created at pipeline start
+  output/story/               ◄── created by `new`
        │
        ├── 1. Parse
        │   ├── script.json         segments as JSON (text, speaker, type)
@@ -468,7 +580,8 @@ OUTPUT DIRECTORY LIFECYCLE
            │   ├── chapter_01.mp3
            │   └── chapter_02.mp3
            └── final/
-               └── story.mp3           complete production
+               ├── story.mp3           complete production
+               └── output.json         provenance manifest (read-only)
 ```
 
 ### Artifact formats
@@ -917,8 +1030,11 @@ Bookend structure tests:
 - `test_export_creates_file` — output file exists and is >0 bytes
 - `test_export_is_valid_mp3` — pydub can reload the exported file
 - `test_export_has_metadata` — exported MP3 has title/artist tags
+- `test_export_creates_manifest` — output.json exists alongside MP3 in final/
+- `test_manifest_has_required_fields` — project, source, generated_at, metadata, cast, settings, stats
+- `test_manifest_cast_matches_actual` — cast in manifest matches what was used
 
-Commit: "Implement assembly with bookend music structure and MP3 export"
+Commit: "Implement assembly with bookend music structure, MP3 export, and output.json manifest"
 
 ---
 
@@ -931,6 +1047,10 @@ Manages the output directory structure, intermediate artifact files, voice demo 
 **Functions**:
 - **`init_output_dir(story_path, output_base=OUTPUT_DIR)`**: Create `output/<slug>/` and all subdirectories. Returns the project directory path. Slug derived from story filename: `tell_tale_heart.txt` → `tell_tale_heart/`.
 - **`write_artifact(project_dir, filename, data)`**: Generic JSON artifact writer. `json.dump(data, indent=2)` to `project_dir/filename`. Used for all 4 artifact files (script.json, cast.json, direction.json, effects.json).
+- **`load_artifact(project_dir, filename)`**: Read JSON artifact back. Returns parsed dict. Returns None if file doesn't exist. Used by `set` subcommand to update cast.json, direction.json, effects.json.
+- **`invalidate_downstream(project_dir, setting_key)`**: Given a setting key (e.g., "voice"), delete the appropriate downstream subdirectories per the invalidation map. Uses a dict mapping keys to lists of subdirs. `shutil.rmtree()` with `os.path.exists()` guard.
+- **`get_project_status(project_dir)`**: Returns a dict describing the current state of each pipeline step (done/pending/partial). Checks for existence of artifacts and counts files in segments/. Used by `status` subcommand.
+- **`list_projects(output_base=OUTPUT_DIR)`**: List all project slugs under the output directory. Returns sorted list of directory names that contain a script.json.
 - **`generate_voice_demos(project_dir, cast, segments)`**: For each character + narrator, generate TTS clips. Characters with dialogue get 2 clips (pangram + first story line). Characters with no dialogue get pangram only. Saves to `voice_demos/`. Uses `tts.generate_single()` internally.
 - **`generate_preview(project_dir, assembled_audio, duration_ms=PREVIEW_DURATION_MS)`**: Trim assembled audio to first N ms, export to `samples/preview_60s.mp3`.
 - **`split_chapters(project_dir, assembled_audio, segments)`**: For stories with >50 segments, split into chapter-level MP3s in `chapters/`. No-op for short stories.
@@ -964,7 +1084,21 @@ Resumability:
 - `test_check_step_fresh_current` — output exists and input is older → returns True (skip)
 - `test_check_step_fresh_multiple_inputs` — cast.json check with both script.json and .cast.json as inputs; editing .cast.json alone invalidates the step
 
-Commit: "Implement output artifacts, voice demos, preview, and resumability"
+Loading and invalidation:
+- `test_load_artifact` — round-trips with write_artifact
+- `test_load_artifact_missing` — returns None for non-existent file
+- `test_invalidate_voice_change` — deletes voice_demos/, segments/, samples/, final/
+- `test_invalidate_music_toggle` — deletes music/, samples/, final/
+- `test_invalidate_reverb_change` — deletes segments/, samples/, final/
+- `test_invalidate_nonexistent_dirs` — doesn't crash on missing subdirs
+
+Project status and listing:
+- `test_get_project_status_empty` — new project → all steps pending
+- `test_get_project_status_partial` — some artifacts exist → mixed done/pending
+- `test_list_projects` — returns sorted list of project slugs
+- `test_list_projects_empty` — empty output dir → empty list
+
+Commit: "Implement output artifacts, voice demos, preview, resumability, and project management"
 
 ---
 
@@ -972,34 +1106,47 @@ Commit: "Implement output artifacts, voice demos, preview, and resumability"
 
 **File**: `audiobook_producer/cli.py`
 
+Uses `argparse` with `add_subparsers()`. Each subcommand gets its own parser. The `new` subcommand runs parse + assign + write configs. The `run` subcommand picks up from where `new` left off (voice demos → TTS → effects → music → assembly → export). The `set` subcommand modifies JSON artifacts in-place and calls `invalidate_downstream()`. The `status` subcommand is purely read-only.
+
 **Tests** (in `tests/test_cli.py` — green after implementation):
 
-Argument parsing:
-- `test_cli_default_args` — no args → uses bundled demo, output to `output/tell_tale_heart/`
-- `test_cli_custom_input` — positional arg sets input file
-- `test_cli_output_flag` — `-o` sets output directory path
-- `test_cli_no_music_flag` — `--no-music` sets flag
-- `test_cli_verbose_flag` — `-v` sets verbose
-- `test_cli_force_flag` — `--force` sets force re-run
-- `test_cli_list_voices` — `--list-voices` prints voices and exits
+Subcommand routing:
+- `test_cli_new_creates_project` — `new demo/tell_tale_heart.txt` creates output dir + script.json + cast.json
+- `test_cli_new_already_exists` — `new` on existing project → error with message to use `run` or `set`
+- `test_cli_run_basic` — `run tell_tale_heart` executes pipeline steps
+- `test_cli_run_nonexistent_project` — `run nonexistent` → SystemExit with clear message
+- `test_cli_run_verbose` — `run tell_tale_heart -v` enables voice demos + preview gate
+- `test_cli_run_force` — `run tell_tale_heart --force` deletes generated artifacts, re-runs everything
+- `test_cli_status_shows_state` — `status tell_tale_heart` prints project state without modifying anything
+- `test_cli_status_nonexistent` — `status nonexistent` → SystemExit with clear message
+- `test_cli_set_voice` — `set tell_tale_heart voice "the old man" en-US-TonyNeural` updates cast.json
+- `test_cli_set_voice_invalidates` — after set voice, voice_demos/ and segments/ are deleted
+- `test_cli_set_music_off` — `set tell_tale_heart music off` updates direction.json
+- `test_cli_set_reverb_room` — `set tell_tale_heart reverb-room 0.5` updates effects.json
+- `test_cli_set_invalid_key` — `set tell_tale_heart badkey val` → SystemExit
+- `test_cli_list_projects` — `list` shows all project dirs under output/
+- `test_cli_list_empty` — `list` with no projects → "No projects found"
+- `test_cli_voices` — `voices` lists available edge-tts voices
+- `test_cli_voices_filter` — `voices --filter en-US` filters voice list
+- `test_cli_no_args_shows_help` — no subcommand → prints help text
 
-Input validation:
-- `test_validate_missing_file` — SystemExit with clear message
-- `test_validate_empty_file` — SystemExit with clear message
-- `test_validate_no_segments` — SystemExit with clear message
-- `test_validate_ffmpeg_missing` — SystemExit when ffmpeg not found
+Input validation (in `new` subcommand):
+- `test_validate_missing_file` — `new nonexistent.txt` → SystemExit with clear message
+- `test_validate_empty_file` — `new empty.txt` → SystemExit with clear message
+- `test_validate_no_segments` — `new` with unparseable file → SystemExit with clear message
+- `test_validate_ffmpeg_missing` — any `run` → SystemExit when ffmpeg not found
 
-Preview gate:
-- `test_preview_gate_verbose` — in `-v` mode with isatty()=True, pipeline calls input() after voice demo step (mock input)
-- `test_preview_gate_nonverbose` — without `-v`, no input() call — proceeds silently
-- `test_preview_gate_noninteractive` — `-v` mode but isatty()=False (piped stdin) — no input() call, proceeds silently
+Preview gate (in `run -v`):
+- `test_preview_gate_verbose` — `run -v` with isatty()=True calls input() after voice demo step (mock input)
+- `test_preview_gate_nonverbose` — `run` without `-v`, no input() call — proceeds silently
+- `test_preview_gate_noninteractive` — `run -v` but isatty()=False (piped stdin) — no input() call, proceeds silently
 
-Resumability integration:
-- `test_force_flag_deletes_output` — `--force` removes existing output dir before starting
+Resumability (in `run`):
+- `test_run_skips_completed_steps` — when artifacts exist and are fresh, pipeline skips those steps (verify via call counts on mocked functions)
+- `test_force_flag_deletes_output` — `--force` removes generated artifacts (preserves configs) before starting
 - `test_force_flag_no_existing_dir` — `--force` on non-existent output dir doesn't crash (os.path.exists guard)
-- `test_resume_skips_completed_steps` — when artifacts exist and are fresh, pipeline skips those steps (verify via call counts on mocked functions)
 
-Commit: "Add CLI with argument parsing, validation, preview gate, and resumability"
+Commit: "Add CLI with subcommand routing, validation, preview gate, and resumability"
 
 ---
 
@@ -1018,9 +1165,9 @@ The Open Window (third-person, 6 cast members with aliases):
 - `test_pipeline_open_window_aliases` — verify "the child" and "the niece" map to the same voice (alias resolution)
 
 Cross-cutting:
-- `test_full_pipeline_no_music` — run with --no-music, verify no music in output
+- `test_full_pipeline_no_music` — run with `set music off` then `run`, verify no music in output
 - `test_full_pipeline_bookend_structure` — verify output audio has music at start and end, silence in the middle
-- `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/, final/
+- `test_full_pipeline_output_dir` — verify output directory contains script.json, cast.json, direction.json, effects.json, segments/, music/, final/, output.json
 - `test_full_pipeline_resume` — run pipeline twice; second run skips TTS (verify TTS mock call count = 0 on second run)
 
 Commit: "Wire up full pipeline and verify end-to-end integration"
@@ -1033,9 +1180,10 @@ No new tests. Manual verification only.
 
 - Write README.md, LICENSE (MIT)
 - Run both demos for real (with actual edge-tts network calls):
-  - `python producer.py demo/tell_tale_heart.txt -v`
-  - `python producer.py demo/the_open_window.txt -v`
+  - `python producer.py new demo/tell_tale_heart.txt && python producer.py run tell_tale_heart -v`
+  - `python producer.py new demo/the_open_window.txt && python producer.py run the_open_window -v`
 - Verify both output MP3s play correctly with bookend intro/outro and distinct character voices
+- Verify `output/<slug>/final/output.json` exists with correct provenance data
 - Commit: "Add documentation and verify end-to-end output for both demos"
 
 ---
