@@ -182,7 +182,7 @@ OUTPUT_DIR = "output"                        # top-level output directory
                │  (edge-tts)   │  w/ retry + backoff
                └──────┬────────┘
                       │
-               N temp MP3 files (intro + story + outro)
+               N MP3 files in output/<slug>/segments/
                       │
   ┌───────────────────┼───────────────────┐
   │                   │                   │
@@ -335,7 +335,7 @@ OUTRO SCRIPT
 - `generate_tts()` is a **sync function** that calls `asyncio.run()` internally for each segment (edge-tts is async-only). This keeps the rest of the pipeline synchronous.
 - One `edge_tts.Communicate()` call per segment
 - Processes ALL segments: intro + story + outro
-- Save to temp dir as individual MP3 files
+- Save directly to `output/<slug>/segments/` as numbered MP3 files (e.g., `000_intro_narrator.mp3`)
 - **Retry logic**: exponential backoff (base 1s), up to 3 retries per segment. Retries trigger on network errors, HTTP errors, or when the output file is 0 bytes (corrupted/empty response).
 - **Progress output**: always print segment counter (`Generating segment 12/47...`). In verbose mode, include ETA (`~1 min remaining`). Non-verbose mode uses a compact single-line counter.
 - Small sleep between successful calls to avoid throttling
@@ -546,6 +546,8 @@ Each unique character (including narrator) gets two demo clips generated before 
 
 Demo filenames are slugified: `the_old_man_pangram.mp3`, `the_old_man_story.mp3`. Narrator demos use the narration voice (not the dialogue voice).
 
+**No-dialogue fallback**: Characters who appear in the cast file but never speak in the story get a pangram demo only (no story line demo). This handles characters mentioned by the narrator but without direct dialogue.
+
 ### Preview gate (verbose/interactive mode only)
 
 When running with `-v`, the pipeline pauses after voice demo generation:
@@ -555,22 +557,22 @@ PREVIEW GATE FLOW
 ═════════════════
                                     ┌──────────────┐
   Parse → Assign → Write demos ───►│ Play demos?  │
-                                    │ [Y/n/voice]  │
+                                    │   [Y/n]      │
                                     └──────┬───────┘
                                            │
-                              ┌────────────┼────────────┐
-                              │            │            │
-                           Y (enter)    voice name    n (skip)
-                              │            │            │
-                         Continue to    Replay that    Skip to
-                         full TTS       character's    full TTS
-                                        demo           silently
+                              ┌────────────┴────────────┐
+                              │                         │
+                           Y (enter)                  n (skip)
+                              │                         │
+                         Continue to                 Skip to
+                         full TTS                    full TTS
+                                                     silently
 ```
 
 - Prints a summary table: each character, their assigned voice, and the demo file path
 - Prompts: `"Listen to voice demos in output/<project>/voice_demos/. Continue? [Y/n] "`
 - `Y` or Enter → proceed to full TTS generation
-- `n` → proceed silently (skip preview, go straight to TTS)
+- `n` → skip preview, proceed to TTS silently
 - The gate is ONLY active in `-v` mode. Without `-v`, voice demos are still generated (for inspection) but no prompt is shown.
 
 ### Resumability
@@ -581,8 +583,8 @@ The pipeline checks for existing artifacts before each step. If an artifact exis
 RESUMABILITY CHECKS
 ═══════════════════
   Step 1 (Parse):     skip if script.json exists AND source .txt mtime unchanged
-  Step 2 (Voices):    skip if cast.json exists AND script.json mtime unchanged
-  Step 3 (Demos):     skip if voice_demos/ has expected file count
+  Step 2 (Voices):    skip if cast.json exists AND both script.json AND .cast.json mtime unchanged
+  Step 3 (Demos):     skip if voice_demos/ has expected file count AND cast.json mtime unchanged
   Step 4 (TTS):       skip if segments/ has expected file count matching script.json
   Step 5 (Music):     skip if music/ambient.mp3 exists
   Step 6 (Assembly):  always re-run (fast, depends on all prior outputs)
@@ -624,7 +626,7 @@ Detailed, multi-line commit messages: short imperative subject line, blank line,
 - **Pedalboard optional**: `try/except ImportError` in `effects.py`, works without it (no reverb, just pass-through).
 - **Hardcoded voice list**: Avoids async network call at startup; 14 English voices is plenty.
 - **Sequential TTS**: Simple and sufficient for short stories. Wall-clock time for "The Tell-Tale Heart" (~40-60 segments) is ~1-2 minutes.
-- **Temp files cleaned up**: `tempfile.mkdtemp()` with `finally: shutil.rmtree()`.
+- **TTS writes to output directory**: Segments save directly to `output/<slug>/segments/` — no temp dir. This enables resumability (partial TTS runs resume from where they left off) and lets users inspect individual segments.
 - **Hash-based voice assignment**: `sha256(name) % len(voices)` is stable across runs and text edits — only the new/removed character's voice changes, others stay the same. Uses `hashlib.sha256` (not `hash()`) because Python's built-in `hash()` is randomized per process since 3.3.
 - **"I" = narrator**: First-person attributions map to the narrator speaker, preventing the narrator from being treated as a separate character in first-person stories.
 - **Narrator voice split**: Narrator narration uses `en-US-GuyNeural` (American), narrator spoken dialogue uses `en-GB-RyanNeural` (British). Audible contrast between inner monologue and spoken words.
@@ -916,14 +918,11 @@ Manages the output directory structure, intermediate artifact files, voice demo 
 
 **Functions**:
 - **`init_output_dir(story_path, output_base=OUTPUT_DIR)`**: Create `output/<slug>/` and all subdirectories. Returns the project directory path. Slug derived from story filename: `tell_tale_heart.txt` → `tell_tale_heart/`.
-- **`write_script_json(project_dir, metadata, segments)`**: Write `script.json` with parsed metadata and segments.
-- **`write_cast_json(project_dir, narrator_info, characters)`**: Write `cast.json` with resolved voice assignments, descriptions, and source (cast_file vs hash).
-- **`write_direction_json(project_dir, **kwargs)`**: Write `direction.json` with assembly config (pauses, bookend timing, no_music flag).
-- **`write_effects_json(project_dir, global_config, per_segment_config)`**: Write `effects.json` with effects config per segment type.
-- **`generate_voice_demos(project_dir, cast, segments)`**: For each character + narrator, generate two TTS clips: pangram and first story line. Saves to `voice_demos/`. Uses `tts.generate_single()` internally.
+- **`write_artifact(project_dir, filename, data)`**: Generic JSON artifact writer. `json.dump(data, indent=2)` to `project_dir/filename`. Used for all 4 artifact files (script.json, cast.json, direction.json, effects.json).
+- **`generate_voice_demos(project_dir, cast, segments)`**: For each character + narrator, generate TTS clips. Characters with dialogue get 2 clips (pangram + first story line). Characters with no dialogue get pangram only. Saves to `voice_demos/`. Uses `tts.generate_single()` internally.
 - **`generate_preview(project_dir, assembled_audio, duration_ms=PREVIEW_DURATION_MS)`**: Trim assembled audio to first N ms, export to `samples/preview_60s.mp3`.
 - **`split_chapters(project_dir, assembled_audio, segments)`**: For stories with >50 segments, split into chapter-level MP3s in `chapters/`. No-op for short stories.
-- **`check_step_fresh(project_dir, step_name, input_path=None)`**: Resumability check — returns True if step's output exists and input mtime is older than output mtime. Used by CLI to skip completed steps.
+- **`check_step_fresh(project_dir, step_name, input_path=None)`**: Resumability check — returns True if step's output exists and input mtime is older than output mtime. Accepts a list of input paths (e.g., both `.txt` and `.cast.json` for the voices step). Used by CLI to skip completed steps.
 - **`slug_from_path(story_path)`**: Convert story filename to output directory slug.
 
 **Tests** (in `tests/test_artifacts.py` — green after implementation):
@@ -932,15 +931,14 @@ Directory and file management:
 - `test_init_output_dir` — creates expected directory tree with all subdirs
 - `test_init_output_dir_existing` — re-running on existing dir doesn't crash or delete files
 - `test_slug_from_path` — `"/path/to/Tell-Tale Heart.txt"` → `"tell_tale_heart"`
-- `test_write_script_json` — writes valid JSON, round-trips through json.load
-- `test_write_cast_json` — writes valid JSON with narrator + characters keys
-- `test_write_direction_json` — writes valid JSON with all pause/timing keys
-- `test_write_effects_json` — writes valid JSON with global + per_segment keys
+- `test_write_artifact` — writes valid JSON, round-trips through json.load, creates file at correct path
+- `test_write_artifact_nested_data` — handles nested dicts/lists correctly (cast.json structure)
 
 Voice demos:
-- `test_generate_voice_demos` — mock TTS, verify 2 files per character (pangram + story line)
+- `test_generate_voice_demos` — mock TTS, verify 2 files per character with dialogue (pangram + story line)
 - `test_voice_demo_filenames` — verify slug-based naming: `the_old_man_pangram.mp3`
 - `test_voice_demo_story_line` — each character's story demo uses their first dialogue line
+- `test_voice_demo_no_dialogue` — character in cast but with no dialogue → pangram only, no crash
 
 Preview and chapters:
 - `test_generate_preview` — output file exists, duration ≈ PREVIEW_DURATION_MS (±500ms)
@@ -952,6 +950,7 @@ Resumability:
 - `test_check_step_fresh_no_output` — no output file → returns False (step needs to run)
 - `test_check_step_fresh_stale` — output exists but input is newer → returns False
 - `test_check_step_fresh_current` — output exists and input is older → returns True (skip)
+- `test_check_step_fresh_multiple_inputs` — cast.json check with both script.json and .cast.json as inputs; editing .cast.json alone invalidates the step
 
 Commit: "Implement output artifacts, voice demos, preview, and resumability"
 
@@ -984,6 +983,7 @@ Preview gate:
 
 Resumability integration:
 - `test_force_flag_deletes_output` — `--force` removes existing output dir before starting
+- `test_force_flag_no_existing_dir` — `--force` on non-existent output dir doesn't crash (os.path.exists guard)
 - `test_resume_skips_completed_steps` — when artifacts exist and are fresh, pipeline skips those steps (verify via call counts on mocked functions)
 
 Commit: "Add CLI with argument parsing, validation, preview gate, and resumability"
