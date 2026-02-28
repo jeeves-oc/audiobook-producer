@@ -12,7 +12,7 @@ from audiobook_producer.tts import generate_single, generate_tts
 
 def _make_mock_communicate(tiny_mp3_path):
     """Create a mock edge_tts.Communicate that writes a tiny MP3."""
-    def factory(text, voice):
+    def factory(text, voice, **kwargs):
         mock = MagicMock()
         async def save(path):
             silence = AudioSegment.silent(duration=100)
@@ -38,7 +38,7 @@ def test_tts_generate_single_retry(mock_comm, tmp_path):
     output = tmp_path / "test.mp3"
     call_count = 0
 
-    def fail_then_succeed(text, voice):
+    def fail_then_succeed(text, voice, **kwargs):
         nonlocal call_count
         call_count += 1
         mock = MagicMock()
@@ -76,7 +76,7 @@ def test_tts_generates_files(mock_comm, tmp_path):
 @patch("audiobook_producer.tts.edge_tts.Communicate")
 def test_tts_retry_exhausted(mock_comm, tmp_path):
     """Raises after all retries exhausted."""
-    def always_fail(text, voice):
+    def always_fail(text, voice, **kwargs):
         mock = MagicMock()
         async def fail_save(path):
             raise Exception("Permanent failure")
@@ -94,7 +94,7 @@ def test_tts_validates_output_size(mock_comm, tmp_path):
     """0-byte output treated as failure."""
     call_count_outer = [0]
 
-    def write_empty(text, voice):
+    def write_empty(text, voice, **kwargs):
         mock = MagicMock()
         async def save(path):
             call_count_outer[0] += 1

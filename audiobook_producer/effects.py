@@ -3,7 +3,12 @@
 import numpy as np
 from pydub import AudioSegment
 
-from audiobook_producer.constants import REVERB_ROOM_SIZE, REVERB_WET_LEVEL
+from audiobook_producer.constants import (
+    REVERB_ROOM_SIZE,
+    REVERB_WET_LEVEL,
+    NARRATOR_REVERB_ROOM_SIZE,
+    NARRATOR_REVERB_WET_LEVEL,
+)
 from audiobook_producer.models import Segment
 
 # Try to import pedalboard — graceful fallback if not installed
@@ -90,10 +95,13 @@ def process_segments(
     normalize: bool = True,
     reverb_room: float = REVERB_ROOM_SIZE,
     reverb_wet: float = REVERB_WET_LEVEL,
+    narrator_reverb_room: float = NARRATOR_REVERB_ROOM_SIZE,
+    narrator_reverb_wet: float = NARRATOR_REVERB_WET_LEVEL,
 ) -> dict[str, AudioSegment]:
     """Process all segments with effects.
 
-    - Reverb on dialogue segments only (if reverb=True)
+    - Dialogue: full reverb (reverb_room / reverb_wet)
+    - Narration: lighter reverb (narrator_reverb_room / narrator_reverb_wet)
     - Volume normalization across all segments (if normalize=True)
     """
     result = {}
@@ -109,6 +117,8 @@ def process_segments(
 
         if reverb and seg and seg.type == "dialogue":
             result[key] = apply_reverb(audio, reverb_room, reverb_wet)
+        elif reverb and seg and seg.type == "narration":
+            result[key] = apply_reverb(audio, narrator_reverb_room, narrator_reverb_wet)
         else:
             result[key] = audio
 

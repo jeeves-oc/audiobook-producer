@@ -10,17 +10,18 @@ from audiobook_producer.constants import NARRATOR_VOICE, NARRATOR_DIALOGUE_VOICE
 
 logger = logging.getLogger(__name__)
 
-# Hardcoded English voice pool (avoids network call at startup)
+# Hardcoded English voice pool (avoids network call at startup).
+# Verified against edge-tts 2026-02 — update if voices go missing.
 VOICE_POOL = [
     "en-US-AriaNeural",
-    "en-US-DavisNeural",
-    "en-US-TonyNeural",
+    "en-US-EricNeural",
+    "en-US-ChristopherNeural",
     "en-US-JennyNeural",
-    "en-US-SaraNeural",
+    "en-US-MichelleNeural",
     "en-GB-SoniaNeural",
     "en-GB-ThomasNeural",
     "en-AU-NatashaNeural",
-    "en-AU-WilliamNeural",
+    "en-AU-WilliamMultilingualNeural",
     "en-CA-ClaraNeural",
     "en-CA-LiamNeural",
     "en-IN-NeerjaNeural",

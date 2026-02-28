@@ -1,6 +1,6 @@
 {
   "narrator": {
-    "voice": "en-US-GuyNeural",
+    "voice": "en-US-RogerNeural",
     "description": "your narrator"
   },
   "cast": {
@@ -10,7 +10,7 @@
       "aliases": ["the child", "the self-possessed young lady"]
     },
     "Framton": {
-      "voice": "en-US-TonyNeural",
+      "voice": "en-US-ChristopherNeural",
       "description": "Framton Nuttel, a nervous visitor undergoing a nerve cure",
       "aliases": ["the caller"]
     },
@@ -19,7 +19,7 @@
       "description": "Mrs. Sappleton, the lady of the house"
     },
     "the bearer of the white mackintosh": {
-      "voice": "en-US-DavisNeural",
+      "voice": "en-US-EricNeural",
       "description": "Mr. Sappleton, returning from a day's shooting",
       "aliases": []
     },

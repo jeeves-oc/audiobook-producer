@@ -6,20 +6,20 @@ import time
 
 import edge_tts
 
-from audiobook_producer.constants import TTS_RETRY_COUNT, TTS_RETRY_BASE_DELAY
+from audiobook_producer.constants import TTS_RETRY_COUNT, TTS_RETRY_BASE_DELAY, TTS_RATE
 from audiobook_producer.models import Segment
 
 
-def generate_single(text: str, voice: str, output_path: str) -> None:
+def generate_single(text: str, voice: str, output_path: str, rate: str = TTS_RATE) -> None:
     """Generate a single TTS clip with retry logic.
 
     Sync wrapper around edge_tts.Communicate(). Retries on network errors,
-    HTTP errors, or 0-byte output files.
+    HTTP errors, or 0-byte output files. Rate is a relative string like "-10%".
     """
     last_error = None
     for attempt in range(TTS_RETRY_COUNT):
         try:
-            communicate = edge_tts.Communicate(text, voice)
+            communicate = edge_tts.Communicate(text, voice, rate=rate)
             asyncio.run(communicate.save(output_path))
 
             # Validate output: 0-byte file counts as failure
@@ -46,7 +46,7 @@ def _segment_filename(index: int, segment: Segment) -> str:
     return f"{index:03d}_{segment.type}_{speaker_slug}.mp3"
 
 
-def generate_tts(segments: list[Segment], output_dir: str) -> list[str]:
+def generate_tts(segments: list[Segment], output_dir: str, rate: str = TTS_RATE) -> list[str]:
     """Generate TTS for all segments.
 
     Returns list of output file paths. Prints progress counter.
@@ -65,7 +65,7 @@ def generate_tts(segments: list[Segment], output_dir: str) -> list[str]:
             continue
 
         print(f"  Generating segment {i + 1}/{total}: {filename}")
-        generate_single(seg.text, seg.voice, output_path)
+        generate_single(seg.text, seg.voice, output_path, rate=rate)
         paths.append(output_path)
 
     return paths

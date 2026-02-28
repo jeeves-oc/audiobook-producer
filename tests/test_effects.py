@@ -38,15 +38,15 @@ def test_reverb_fallback_no_pedalboard():
         eff.PEDALBOARD_AVAILABLE = original_available
 
 
-def test_reverb_skips_narration():
-    """Narration segments are not reverbed."""
+def test_reverb_on_narration():
+    """Narration segments get lighter reverb than dialogue."""
     segments = [
-        Segment(type="narration", text="It was dark.", speaker="narrator", voice="en-US-GuyNeural"),
+        Segment(type="narration", text="It was dark.", speaker="narrator", voice="en-US-RogerNeural"),
     ]
     audio_map = {"narration_0": _make_audio(500)}
     result = process_segments(segments, audio_map, reverb=True)
-    # Narration should not have reverb applied — duration unchanged
     assert isinstance(result["narration_0"], AudioSegment)
+    assert abs(len(result["narration_0"]) - 500) < 100  # duration roughly preserved
 
 
 def test_normalize_levels():

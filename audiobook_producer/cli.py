@@ -15,6 +15,8 @@ from audiobook_producer.constants import (
     MUSIC_BED_DB,
     REVERB_ROOM_SIZE,
     REVERB_WET_LEVEL,
+    NARRATOR_REVERB_ROOM_SIZE,
+    NARRATOR_REVERB_WET_LEVEL,
     VERSION,
 )
 from audiobook_producer.models import Segment
@@ -318,6 +320,8 @@ def cmd_run(args):
         all_segments, audio_map,
         reverb=reverb_on, normalize=normalize_on,
         reverb_room=reverb_room, reverb_wet=reverb_wet,
+        narrator_reverb_room=NARRATOR_REVERB_ROOM_SIZE,
+        narrator_reverb_wet=NARRATOR_REVERB_WET_LEVEL,
     )
 
     # Save processed audio back

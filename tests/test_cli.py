@@ -80,7 +80,7 @@ def _create_project(tmp_path, slug="test_story"):
 
 def _mock_tts_communicate():
     """Create a mock edge_tts.Communicate factory."""
-    def factory(text, voice):
+    def factory(text, voice, **kwargs):
         mock = MagicMock()
         async def save(path):
             AudioSegment.silent(duration=100).export(path, format="mp3")

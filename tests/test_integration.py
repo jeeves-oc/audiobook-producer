@@ -31,7 +31,7 @@ TOW_PATH = os.path.join(DEMO_DIR, "the_open_window.txt")
 
 def _mock_tts_communicate():
     """Create a mock edge_tts.Communicate factory."""
-    def factory(text, voice):
+    def factory(text, voice, **kwargs):
         mock = MagicMock()
         async def save(path):
             AudioSegment.silent(duration=100).export(path, format="mp3")

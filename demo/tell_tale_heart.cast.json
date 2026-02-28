@@ -1,11 +1,11 @@
 {
   "narrator": {
-    "voice": "en-US-GuyNeural",
+    "voice": "en-US-RogerNeural",
     "description": "a most unreliable narrator"
   },
   "cast": {
     "the old man": {
-      "voice": "en-US-DavisNeural",
+      "voice": "en-US-EricNeural",
       "description": "a frail old man with a pale blue vulture eye"
     },
     "officers": {
